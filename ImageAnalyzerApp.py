@@ -11,20 +11,64 @@ import numpy as np
 from scipy import ndimage
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from skimage.filters import threshold_sauvola
-from skimage import measure, morphology, segmentation, feature, filters, util
-from skimage.segmentation import find_boundaries
+from skimage import measure, segmentation, feature
 from scipy.stats import lognorm
+from concurrent.futures import ProcessPoolExecutor
 
 
 # Set the theme and color scheme
 ctk.set_appearance_mode("dark")  # 'light' (default), 'dark'
 ctk.set_default_color_theme("blue")  # 'blue' (default), 'green', 'dark-blue'
 
+def sauvola_processing(params):
+    img, window_size, k = params['img'], params['window_size'], params['k']
+    img_uint8 = (img * 255).astype(np.uint8)
+    thresh_sauvola = threshold_sauvola(img_uint8, window_size=window_size, k=k)
+    binary_sauvola = img_uint8 > thresh_sauvola
+    binary_sauvola_inverted = np.invert(binary_sauvola)
+    return binary_sauvola_inverted
+
+def particle_processing(labels, min_size, min_roundness):
+    """
+    Standalone function to perform particle analysis in parallel.
+    This function does not interact with the GUI directly.
+    """
+    props = measure.regionprops(labels)
+    filtered_labels = np.zeros_like(labels)
+    new_label = 1
+    for prop in props:
+        roundness = (4 * np.pi * prop.area) / (prop.perimeter ** 2) if prop.perimeter else 0
+        if prop.area >= min_size and roundness >= min_roundness:
+            filtered_labels[labels == prop.label] = new_label
+            new_label += 1
+
+    boundaries = segmentation.find_boundaries(filtered_labels)
+    return filtered_labels, boundaries
+
+def watershed_processing(params):
+    from skimage import feature, segmentation
+    import numpy as np
+
+    thresholded_distance, distances, masked_sauvola = params['thresholded_distance'], params['distances'], params[
+        'masked_sauvola']
+    min_distance = params['min_distance']
+
+    coordinates = feature.peak_local_max(thresholded_distance, min_distance=min_distance, exclude_border=False)
+    markers = np.zeros_like(distances, dtype=int)
+    markers[tuple(coordinates.T)] = np.arange(1, len(coordinates) + 1)
+    labels = segmentation.watershed(-thresholded_distance, markers, mask=masked_sauvola)
+
+    return labels
+
+
 class ImageAnalyzerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Image Analyzer")
         self.state('zoomed')  # Start the app maximized/full-screen
+
+        self.executor = ProcessPoolExecutor(max_workers=4)
+        self.processing_completed = False
 
         # Set default parameters
         self.parameters = {
@@ -37,17 +81,20 @@ class ImageAnalyzerApp(ctk.CTk):
             'border_width': 50,
             'min_size': 150,
             'min_roundness': 0.75,
-            'treshold_value': 0.3,
-            'min_distance': 3
+            'threshold_value': 0.3,
+            'min_distance': 3,
+            'scale_factor': 0.169
         }
         self.current_image = None
         self.labels = None
         # Create the main layout frames
-        self.frame_left = ctk.CTkFrame(self, width=0.7*self.winfo_screenwidth())
-        self.frame_right = ctk.CTkFrame(self, width=0.3*self.winfo_screenwidth())
+        self.frame_left = ctk.CTkFrame(self)
+        self.frame_right = ctk.CTkFrame(self)
 
-        self.frame_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.frame_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        # Assuming you want the right frame to take minimal necessary space
+        # and the left frame (canvas frame) to take up the remaining space.
+        self.frame_right.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10)
+        self.frame_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Set up the Matplotlib figure and canvas on the left side
         self.figure = Figure(figsize=(5, 4), dpi=100)
@@ -65,106 +112,163 @@ class ImageAnalyzerApp(ctk.CTk):
         self.open_button = ctk.CTkButton(self.frame_right, text="Open Image", command=self.open_image)
         self.open_button.pack(pady=10)
 
+        # Initialize Progress Bar in the right frame below the open button
+        self.progress_bar = ctk.CTkProgressBar(self.frame_right, width=200, height=20)
+        self.progress_bar.pack(pady=10)
+        self.progress_bar.set(0)  # Set progress to 0%
+
         # Parameters frame within the right frame
         self.parameters_frame = ctk.CTkFrame(self.frame_right)
-        self.parameters_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        self.parameters_frame.pack(fill=tk.BOTH, pady=10)
+
+        # Use grid layout management within self.parameters_frame
+        self.parameters_frame.grid_columnconfigure(0, weight=1)
+        self.parameters_frame.grid_columnconfigure(1, weight=1)
+        self.parameters_frame.grid_columnconfigure(2, weight=1)
 
         # Parameter: low_cutoff frequency
         self.low_cutoff_label = ctk.CTkLabel(self.parameters_frame, text="Low Cutoff Frequency")
-        self.low_cutoff_label.pack()
+        #self.low_cutoff_label.pack()
         self.low_cutoff_entry = ctk.CTkEntry(self.parameters_frame)
-        self.low_cutoff_entry.pack()
+        #self.low_cutoff_entry.pack()
         self.low_cutoff_entry.insert(0, self.parameters['low_cutoff'])
 
 
         # Parameter: high_cutoff frequency
         self.high_cutoff_label = ctk.CTkLabel(self.parameters_frame, text="High Cutoff Frequency")
-        self.high_cutoff_label.pack()
+        #self.high_cutoff_label.pack()
         self.high_cutoff_entry = ctk.CTkEntry(self.parameters_frame)
-        self.high_cutoff_entry.pack()
+        #self.high_cutoff_entry.pack()
         self.high_cutoff_entry.insert(0, self.parameters['high_cutoff'])
-        self.high_cutoff_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.bandpass)
-        self.high_cutoff_button.pack(pady=10)
+        self.high_cutoff_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('bandpass', self.bandpass))
+        #self.high_cutoff_button.pack(pady=10)
+
+        self.low_cutoff_label.grid(row=0, column=0, pady=(10, 0), padx=(10, 5))
+        self.high_cutoff_label.grid(row=0, column=1, pady=(10, 0), padx=(5, 10))
+        self.low_cutoff_entry.grid(row=1, column=0, pady=(5, 10), padx=(10, 5))
+        self.high_cutoff_entry.grid(row=1, column=1, pady=(5, 10), padx=(5, 10))
+        self.high_cutoff_button.grid(row=1, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: a
         self.a_label = ctk.CTkLabel(self.parameters_frame, text="a")
-        self.a_label.pack()
+        #self.a_label.pack()
         self.a_entry = ctk.CTkEntry(self.parameters_frame)
-        self.a_entry.pack()
+        #self.a_entry.pack()
         self.a_entry.insert(0, self.parameters['a'])
 
         # Parameter: b
         self.b_label = ctk.CTkLabel(self.parameters_frame, text="b")
-        self.b_label.pack()
+        #self.b_label.pack()
         self.b_entry = ctk.CTkEntry(self.parameters_frame)
-        self.b_entry.pack()
+        #self.b_entry.pack()
         self.b_entry.insert(0, self.parameters['b'])
-        self.b_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.saturate)
-        self.b_button.pack(pady=10)
+        self.b_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('saturate', self.saturate))
+        #self.b_button.pack(pady=10)
+
+        self.a_label.grid(row=2, column=0, pady=(10, 0), padx=(10, 5))
+        self.b_label.grid(row=2, column=1, pady=(10, 0), padx=(5, 10))
+        self.a_entry.grid(row=3, column=0, pady=(5, 10), padx=(10, 5))
+        self.b_entry.grid(row=3, column=1, pady=(5, 10), padx=(5, 10))
+        self.b_button.grid(row=3, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: window size
         self.window_size_label = ctk.CTkLabel(self.parameters_frame, text="window size")
-        self.window_size_label.pack()
+        #self.window_size_label.pack()
         self.window_size_entry = ctk.CTkEntry(self.parameters_frame)
-        self.window_size_entry.pack()
+        #self.window_size_entry.pack()
         self.window_size_entry.insert(0, self.parameters['window_size'])
 
         # Parameter: k
         self.k_label = ctk.CTkLabel(self.parameters_frame, text="k")
-        self.k_label.pack()
+        #self.k_label.pack()
         self.k_entry = ctk.CTkEntry(self.parameters_frame)
-        self.k_entry.pack()
+        #self.k_entry.pack()
         self.k_entry.insert(0, self.parameters['k'])
-        self.k_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.sauvola)
-        self.k_button.pack(pady=10)
+        self.k_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('sauvola', self.sauvola))
+        #self.k_button.pack(pady=10)
+
+        self.window_size_label.grid(row=4, column=0, pady=(10, 0), padx=(10, 5))
+        self.k_label.grid(row=4, column=1, pady=(10, 0), padx=(5, 10))
+        self.window_size_entry.grid(row=5, column=0, pady=(5, 10), padx=(10, 5))
+        self.k_entry.grid(row=5, column=1, pady=(5, 10), padx=(5, 10))
+        self.k_button.grid(row=5, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: border_width
         self.border_label = ctk.CTkLabel(self.parameters_frame, text="border width removal")
-        self.border_label.pack()
+        #self.border_label.pack()
         self.border_entry = ctk.CTkEntry(self.parameters_frame)
-        self.border_entry.pack()
+        #self.border_entry.pack()
         self.border_entry.insert(0, self.parameters['border_width'])
-        self.border_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.mask)
-        self.border_button.pack(pady=10)
+        self.border_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('mask', self.mask))
+        #self.border_button.pack(pady=10)
 
-        # Parameter: treshold_value
-        self.treshold_value_label = ctk.CTkLabel(self.parameters_frame, text="Particle detection")
-        self.treshold_value_label.pack()
-        self.treshold_value_entry = ctk.CTkEntry(self.parameters_frame)
-        self.treshold_value_entry.pack()
-        self.treshold_value_entry.insert(0, self.parameters['treshold_value'])
-        self.treshold_value_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.distance)
-        self.treshold_value_button.pack(pady=10)
+        self.border_label.grid(row=6, column=1, pady=(10, 0), padx=(5, 10))
+        self.border_entry.grid(row=7, column=1, pady=(5, 10), padx=(5, 10))
+        self.border_button.grid(row=7, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
+
+        # Parameter: threshold_value
+        self.threshold_value_label = ctk.CTkLabel(self.parameters_frame, text="Particle detection")
+        #self.threshold_value_label.pack()
+        self.threshold_value_entry = ctk.CTkEntry(self.parameters_frame)
+        #self.threshold_value_entry.pack()
+        self.threshold_value_entry.insert(0, self.parameters['threshold_value'])
+        self.threshold_value_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('distance', self.distance))
+        #self.threshold_value_button.pack(pady=10)
+
+        self.threshold_value_label.grid(row=8, column=1, pady=(10, 0), padx=(5, 10))
+        self.threshold_value_entry.grid(row=9, column=1, pady=(5, 10), padx=(5, 10))
+        self.threshold_value_button.grid(row=9, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: min_distance
         self.min_distance_label = ctk.CTkLabel(self.parameters_frame, text="Watershed")
-        self.min_distance_label.pack()
+        #self.min_distance_label.pack()
         self.min_distance_entry = ctk.CTkEntry(self.parameters_frame)
-        self.min_distance_entry.pack()
+        #self.min_distance_entry.pack()
         self.min_distance_entry.insert(0, self.parameters['min_distance'])
-        self.min_distance_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.watershed)
-        self.min_distance_button.pack(pady=10)
+        self.min_distance_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('watershed', self.watershed))
+        #self.min_distance_button.pack(pady=10)
+
+        self.min_distance_label.grid(row=10, column=1, pady=(10, 0), padx=(5, 10))
+        self.min_distance_entry.grid(row=11, column=1, pady=(5, 10), padx=(5, 10))
+        self.min_distance_button.grid(row=11, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: min_size
         self.min_size_label = ctk.CTkLabel(self.parameters_frame, text="min size")
-        self.min_size_label.pack()
+        #self.min_size_label.pack()
         self.min_size_entry = ctk.CTkEntry(self.parameters_frame)
-        self.min_size_entry.pack()
+        #self.min_size_entry.pack()
         self.min_size_entry.insert(0, self.parameters['min_size'])
 
         # Parameter: min_roundness
         self.min_roundness_label = ctk.CTkLabel(self.parameters_frame, text="roundness")
-        self.min_roundness_label.pack()
+        #self.min_roundness_label.pack()
         self.min_roundness_entry = ctk.CTkEntry(self.parameters_frame)
-        self.min_roundness_entry.pack()
+        #self.min_roundness_entry.pack()
         self.min_roundness_entry.insert(0, self.parameters['min_roundness'])
-        self.min_roundness_button = ctk.CTkButton(self.parameters_frame, text="Show", command=self.particle)
-        self.min_roundness_button.pack(pady=10)
+        self.min_roundness_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('particle', self.particle))
+        #self.min_roundness_button.pack(pady=10)
+
+        self.min_size_label.grid(row=12, column=0, pady=(10, 0), padx=(10, 5))
+        self.min_roundness_label.grid(row=12, column=1, pady=(10, 0), padx=(5, 10))
+        self.min_size_entry.grid(row=13, column=0, pady=(5, 10), padx=(10, 5))
+        self.min_roundness_entry.grid(row=13, column=1, pady=(5, 10), padx=(5, 10))
+        self.min_roundness_button.grid(row=13, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
 
         #OverlayButton
         self.overlay_button = ctk.CTkButton(self.parameters_frame, text="Overlay", command=self.overlay_current_image)
-        self.overlay_button.pack(pady=10)
+        #self.overlay_button.pack(pady=10)
+        self.overlay_button.grid(row=15, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
+
+        # Parameter: scale_factor
+        self.scale_factor_label = ctk.CTkLabel(self.parameters_frame, text="nm / pixel")
+        #self.scale_factor_label.pack()
+        self.scale_factor_entry = ctk.CTkEntry(self.parameters_frame)
+        #self.scale_factor_entry.pack()
+        self.scale_factor_entry.insert(0, self.parameters['scale_factor'])
+
+        self.scale_factor_label.grid(row=16, column=1, pady=(10, 0), padx=(5, 10))
+        self.scale_factor_entry.grid(row=17, column=1, pady=(5, 10), padx=(5, 10))
 
         # Add other parameter controls here similarly
 
@@ -173,47 +277,123 @@ class ImageAnalyzerApp(ctk.CTk):
         self.process_button.pack(pady=10)
 
         # Add button
-        self.add_button = ctk.CTkButton(self.frame_right, text="Add Data", command=self.add_data)
+        self.add_button = ctk.CTkButton(self.frame_right, text="Clear", command=self.clear_data)
         self.add_button.pack(pady=10)
 
-        # Histogram button
-        self.histogram_button = ctk.CTkButton(self.frame_right, text="Show Histogram", command=self.show_histogram)
-        self.histogram_button.pack(pady=10)
 
         # Save button
         self.save_button = ctk.CTkButton(self.frame_right, text="Save Results", command=self.save_results)
         self.save_button.pack(pady=10)
 
-        # Initialize dataframe to store results
-        self.results_df = pd.DataFrame()
 
-    # Define the functionality for each button and input here...
+    def set_and_start_processing(self, process_name, process_function):
+        self.initial_process = process_name
+        self.processing_completed = False
+        process_function()
+        self.start_processing_check()
+
+    def start_processing_check(self):
+        """Starts a loop that checks if processing is completed."""
+        if self.processing_completed:
+            self.plot_result_based_on_initial_process()
+        else:
+            # Recheck after a short delay
+            self.after(100, self.start_processing_check)
+
+    def plot_result_based_on_initial_process(self):
+        """Plots the result based on the initial process."""
+        if self.initial_process == "bandpass":
+            self.plotting(image=self.img_back, cmap='gray')
+            self.current_image = {'image_data': self.img_back, 'process_type': 'bandpass'}
+        elif self.initial_process == "saturate":
+            self.plotting(image=self.img_back_sat, cmap='gray')
+            self.current_image = {'image_data': self.img_back_sat, 'process_type': 'saturate'}
+        elif self.initial_process == "sauvola":
+            self.plotting(image=self.binary_sauvola_inverted, cmap='gray')
+            self.current_image = {'image_data': self.binary_sauvola_inverted, 'process_type': 'sauvola'}
+        elif self.initial_process == "mask":
+            self.plotting(image=self.masked_sauvola, cmap='gray')
+            self.current_image = {'image_data': self.masked_sauvola, 'process_type': 'mask'}
+        elif self.initial_process == "distance":
+            self.plotting(image=self.thresholded_distance, cmap='gray')
+            self.current_image = {'image_data': self.thresholded_distance, 'process_type': 'distance'}
+        elif self.initial_process == "watershed":
+            self.plotting(image=self.labels, cmap='nipy_spectral')
+            self.current_image = {'image_data': self.labels, 'process_type': 'watershed'}
+        elif self.initial_process == "particle":
+            self.plotting(image=self.boundaries, cmap='gray')
+            self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+        # Reset the flag
+        self.processing_completed = False
+
+    def plotting(self, image, cmap=None):
+        canvas_width, canvas_height = self.canvas_widget.winfo_width(), self.canvas_widget.winfo_height()
+        dpi = self.figure.dpi
+        fig_width = canvas_width / dpi
+        fig_height = canvas_height / dpi
+
+        # Adjust figure size based on the canvas size
+        self.figure.set_size_inches(fig_width, fig_height, forward=True)
+        self.figure.clf()
+        ax = self.figure.add_subplot(111)
+
+        # Preserve the aspect ratio of the image
+        img_height, img_width = image.shape[:2]
+        img_aspect = img_width / img_height
+        canvas_aspect = canvas_width / canvas_height
+
+        # Determine scaling to fit the image within the canvas
+        if img_aspect > canvas_aspect:
+            # Image is wider than canvas
+            scale = canvas_width / img_width
+        else:
+            # Image is taller than canvas
+            scale = canvas_height / img_height
+
+        # Calculate new image dimensions
+        new_img_width = img_width * scale / dpi
+        new_img_height = img_height * scale / dpi
+
+        # Center the image in the figure
+        left_margin = (fig_width - new_img_width) / 2
+        bottom_margin = (fig_height - new_img_height) / 2
+
+        # Adjust subplot parameters to fit the image
+        self.figure.subplots_adjust(left=left_margin / fig_width,
+                                    right=1 - (left_margin / fig_width),
+                                    bottom=bottom_margin / fig_height,
+                                    top=1 - (bottom_margin / fig_height),
+                                    wspace=0, hspace=0)
+
+        if cmap is None:
+            ax.imshow(image, aspect='equal')
+        else:
+            ax.imshow(image, cmap=cmap, aspect='equal')
+
+        ax.axis('off')
+        self.canvas.draw()
+
     def open_image(self):
+        self.processing_completed = False
         # Function to open and display a grayscale image with OpenCV using Matplotlib in Tkinter
         filepath = filedialog.askopenfilename()
         if not filepath:  # If no file is selected
             return
-
+        self.progress_bar.set(0)
+        self.update_idletasks()
         # Read the image in grayscale
         self.image_cv = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
 
         self.current_image = {'image_data': self.image_cv, 'process_type': 'open_image'}
 
-        # Clear the existing figure
-        self.figure.clf()
+        self.plotting(image=self.image_cv, cmap='gray')
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
+        self.process_all()
 
-        # Display the image on the new axis
-        ax.imshow(self.image_cv, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
-
-        # Update the canvas to show the new image
-        self.canvas.draw()
 
 
     def bandpass(self):
+
         f_image = fft2(self.image_cv)
         fshift = fftshift(f_image)
 
@@ -244,70 +424,52 @@ class ImageAnalyzerApp(ctk.CTk):
         img_back = ifft2(f_ishift)
         self.img_back = np.abs(img_back)
 
-        self.current_image = {'image_data': self.img_back, 'process_type': 'bandpass'}
+        self.saturate()  # Apply saturation
 
-        # Clear the existing figure
-        self.figure.clf()
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
 
-        # Display the image on the new axis
-        ax.imshow(self.img_back, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
-
-        # Update the canvas to show the new image
-        self.canvas.draw()
 
     def saturate(self):
 
         self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
 
-        self.current_image = {'image_data': self.img_back_sat, 'process_type': 'saturate'}
+        self.sauvola()  # Apply Sauvola thresholding
 
-        # Clear the existing figure
-        self.figure.clf()
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
-
-        # Display the image on the new axis
-        ax.imshow(self.img_back_sat, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
-
-        # Update the canvas to show the new image
-        self.canvas.draw()
 
     def sauvola(self):
 
-        # convert to 8-bit (grayscale)
+        params = {
+            'img': self.img_back_sat,  # Example image data
+            'window_size': int(self.window_size_entry.get()),
+            'k': float(self.k_entry.get())
+        }
 
-        img_uint8 = (self.img_back_sat * 255).astype(np.uint8)
+        future = self.executor.submit(sauvola_processing, params)
+        future.add_done_callback(lambda future: self.on_sauvola_completed(future, 'gray'))
+        #future.add_done_callback(self.on_sauvola_completed)
 
-        # Apply Sauvola thresholding -> make a binary picture from the greyscale picture with local thresholding
-        thresh_sauvola = threshold_sauvola(img_uint8, window_size=int(self.window_size_entry.get()), k=float(self.k_entry.get()))
-        binary_sauvola = img_uint8 > thresh_sauvola
 
-        # invert the picture to make particles white and background black -> needed for detection
 
-        self.binary_sauvola_inverted = np.invert(binary_sauvola)
 
-        self.current_image = {'image_data': self.binary_sauvola_inverted, 'process_type': 'sauvola'}
+    def on_sauvola_completed(self, future, cmap):
+        # Ensure GUI updates are scheduled on the main thread
+        result = future.result()
 
-        # Clear the existing figure
-        self.figure.clf()
+        self.binary_sauvola_inverted = result
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
+        self.after(0, self.mask)
 
-        # Display the image on the new axis
-        ax.imshow(self.binary_sauvola_inverted, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
 
-        # Update the canvas to show the new image
-        self.canvas.draw()
+
+    def close_app(self):
+        # Properly shutdown the executor on application close
+        self.executor.shutdown()
+        self.destroy()
+
 
     def mask(self):
+        self.processing_completed = False
         border_width = int(self.border_entry.get())
         masked_sauvola = self.binary_sauvola_inverted
         masked_sauvola[:border_width, :] = 0  # Top edge
@@ -317,70 +479,93 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.masked_sauvola = masked_sauvola
 
-        self.current_image = {'image_data': self.masked_sauvola, 'process_type': 'masked'}
+        self.distance()  # Compute distance transform
 
-        # Clear the existing figure
-        self.figure.clf()
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
 
-        # Display the image on the new axis
-        ax.imshow(self.masked_sauvola, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
-
-        # Update the canvas to show the new image
-        self.canvas.draw()
 
     def distance(self):
+        self.processing_completed = False
         # Compute the distance transform
-        self.distance = ndimage.distance_transform_edt(self.masked_sauvola)
+        self.distances = ndimage.distance_transform_edt(self.masked_sauvola)
 
         # Apply a threshold to focus on significant regions, as previously done
-        threshold_value = float(self.treshold_value_entry.get()) * np.max(self.distance)
-        self.thresholded_distance = np.where(self.distance > threshold_value, self.distance, 0)
+        threshold_value = float(self.threshold_value_entry.get()) * np.max(self.distances)
+        self.thresholded_distance = np.where(self.distances > threshold_value, self.distances, 0)
 
-        self.current_image = {'image_data': self.thresholded_distance, 'process_type': 'distance'}
+        self.watershed()  # Apply watershed segmentation
 
-        # Clear the existing figure
-        self.figure.clf()
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
 
-        # Display the image on the new axis
-        ax.imshow(self.thresholded_distance, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
+    def watershed(self):
+        self.processing_completed = False
+        params = {
+            'thresholded_distance': self.thresholded_distance,
+            'distances': self.distances,
+            'masked_sauvola': self.masked_sauvola,
+            'min_distance': int(self.min_distance_entry.get())
+        }
 
-        # Update the canvas to show the new image
-        self.canvas.draw()
+        future = self.executor.submit(watershed_processing, params)
+        future.add_done_callback(lambda future: self.on_watershed_completed(future, 'nipy_spectral'))
 
+    def on_watershed_completed(self, future, cmap):
+        result = future.result()
+
+        self.labels = result
+
+        self.after(0, self.particle)
+
+
+
+
+
+    '''
     def watershed(self):
 
         coordinates = feature.peak_local_max(self.thresholded_distance, min_distance=int(self.min_distance_entry.get()), exclude_border=False)
 
         # Directly create unique markers for each peak without dilation
-        markers = np.zeros_like(self.distance, dtype=int)
+        markers = np.zeros_like(self.distances, dtype=int)
         markers[tuple(coordinates.T)] = np.arange(1, len(coordinates) + 1)
 
         # Use the negative distance transform as input for watershed segmentation
         self.labels = segmentation.watershed(-self.thresholded_distance, markers, mask=self.masked_sauvola)
 
+        self.plotting(image=self.labels, cmap='nipy_spectral')
+
+        self.particle()  # Particle analysis
+
         self.current_image = {'image_data': self.labels, 'process_type': 'watershed'}
+    '''
+    def particle(self):
+        self.processing_completed = False
+        # Prepare parameters for particle analysis
+        params = {
+            'labels': self.labels,  # Assuming self.labels is available from previous processing
+            'min_size': int(self.min_size_entry.get()),
+            'min_roundness': float(self.min_roundness_entry.get())
+        }
 
-        # Clear the existing figure
-        self.figure.clf()
+        # Submit the particle analysis task for parallel processing
+        future = self.executor.submit(particle_processing, **params)
+        future.add_done_callback(lambda future: self.on_particle_completed(future, 'gray'))
+        #future.add_done_callback(self.on_particle_completed)
 
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
 
-        # Display the image on the new axis
-        ax.imshow(self.labels, cmap='nipy_spectral')
-        ax.axis('off')  # Hide axis ticks and labels
+        self.processing_completed = True
 
-        # Update the canvas to show the new image
-        self.canvas.draw()
 
+    def on_particle_completed(self, future, cmap):
+        # This method is called when the particle_processing task completes
+        filtered_labels, boundaries = future.result()
+
+        self.boundaries = boundaries
+        self.filtered_labels = filtered_labels
+
+
+
+    '''
     def particle(self):
 
         props = measure.regionprops(self.labels)
@@ -400,19 +585,8 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
 
-        # Clear the existing figure
-        self.figure.clf()
-
-        # Create a new axis for displaying the image
-        ax = self.figure.add_subplot(111)
-
-        # Display the image on the new axis
-        ax.imshow(self.boundaries, cmap='gray')
-        ax.axis('off')  # Hide axis ticks and labels
-
-        # Update the canvas to show the new image
-        self.canvas.draw()
-
+        self.plotting(image=self.boundaries, cmap='gray')
+    '''
     def overlay_current_image(self):
         if not hasattr(self, 'image_cv') or not hasattr(self, 'current_image'):
             print("Required attributes not set.")
@@ -477,44 +651,249 @@ class ImageAnalyzerApp(ctk.CTk):
 
         else:
             pass
-        '''
-        elif process_type in ['distance', 'watershed']:
-            # Keep the distance processing as it works
-            mask = image_data > 0
-            colormap = 'plasma' if process_type == 'distance' else 'nipy_spectral'
-            colored_image = plt.get_cmap(colormap)(image_data / np.max(image_data)) if np.max(
-                image_data) > 0 else plt.get_cmap(colormap)(image_data)
-            colored_overlay = (colored_image[..., :3] * 255).astype(np.uint8)
-            overlay_image = original_bgr.copy()
-            # Apply the colored overlay where mask is True
-            overlay_image[mask] = colored_overlay[mask]
-        
-        elif:
-            print(f"Unrecognized process type: {process_type}")
-            return'''
+
 
         # Update the Matplotlib figure for display
-        self.figure.clf()
+
+        self.plotting(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
+        '''self.figure.clf()
         ax = self.figure.add_subplot(111)
         ax.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
         ax.axis('off')
-        self.canvas.draw()
+        self.canvas.draw()'''
+
+    def process_all(self):
+        f_image = fft2(self.image_cv)
+        fshift = fftshift(f_image)
+
+        # 3. Create a bandpass filter
+        rows, cols = self.image_cv.shape
+        crow, ccol = rows // 2, cols // 2
+
+        # Cut-off frequencies
+        low_cutoff = int(self.low_cutoff_entry.get())
+        high_cutoff = int(self.high_cutoff_entry.get())
+
+        # Create a mask first with 1s for a low-pass filter
+        mask = np.zeros((rows, cols), dtype=np.float32)
+        y, x = np.ogrid[:rows, :cols]
+        center = (crow, ccol)
+        dist_from_center = np.sqrt((x - center[1]) ** 2 + (y - center[0]) ** 2)
+
+        # Low pass filter mask
+        mask[dist_from_center <= high_cutoff] = 1
+        # High pass filter mask (inverted to create band-pass)
+        mask[dist_from_center < low_cutoff] = 0
+
+        # 4. Apply the filter
+        fshift_filtered = fshift * mask
+
+        # 5. Inverse Fourier Transform
+        f_ishift = ifftshift(fshift_filtered)
+        img_back = ifft2(f_ishift)
+        self.img_back = np.abs(img_back)
+
+        self.progress_bar.set(1 / 8)  # Update progress
+        self.update_idletasks()
+
+        self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
+
+        self.progress_bar.set(2 / 8)  # Update progress
+        self.update_idletasks()
+
+        # convert to 8-bit (grayscale)
+
+        img_uint8 = (self.img_back_sat * 255).astype(np.uint8)
+
+        # Apply Sauvola thresholding -> make a binary picture from the greyscale picture with local thresholding
+        thresh_sauvola = threshold_sauvola(img_uint8, window_size=int(self.window_size_entry.get()),
+                                           k=float(self.k_entry.get()))
+        binary_sauvola = img_uint8 > thresh_sauvola
+
+        # invert the picture to make particles white and background black -> needed for detection
+
+        self.binary_sauvola_inverted = np.invert(binary_sauvola)
+
+        self.progress_bar.set(3 / 8)  # Update progress
+        self.update_idletasks()
+
+        border_width = int(self.border_entry.get())
+        masked_sauvola = self.binary_sauvola_inverted
+        masked_sauvola[:border_width, :] = 0  # Top edge
+        masked_sauvola[-border_width:, :] = 0  # Bottom edge
+        masked_sauvola[:, :border_width] = 0  # Left edge
+        masked_sauvola[:, -border_width:] = 0
+
+        self.masked_sauvola = masked_sauvola
+
+        self.progress_bar.set(4 / 8)  # Update progress
+        self.update_idletasks()
+
+        # Compute the distance transform
+        self.distances = ndimage.distance_transform_edt(self.masked_sauvola)
+
+        # Apply a threshold to focus on significant regions, as previously done
+        threshold_value = float(self.threshold_value_entry.get()) * np.max(self.distances)
+        self.thresholded_distance = np.where(self.distances > threshold_value, self.distances, 0)
+
+        self.progress_bar.set(5 / 8)  # Update progress
+        self.update_idletasks()
+
+        coordinates = feature.peak_local_max(self.thresholded_distance, min_distance=int(self.min_distance_entry.get()),
+                                             exclude_border=False)
+
+        # Directly create unique markers for each peak without dilation
+        markers = np.zeros_like(self.distances, dtype=int)
+        markers[tuple(coordinates.T)] = np.arange(1, len(coordinates) + 1)
+
+        # Use the negative distance transform as input for watershed segmentation
+        self.labels = segmentation.watershed(-self.thresholded_distance, markers, mask=self.masked_sauvola)
+
+        self.progress_bar.set(6 / 8)  # Update progress
+        self.update_idletasks()
+
+        props = measure.regionprops(self.labels)
+
+        # Initialize a new label matrix for filtered regions
+        self.filtered_labels = np.zeros_like(self.labels)
+
+        # Assign new labels only to regions that meet the criteria
+        new_label = 1
+        for prop in props:
+            roundness = (4 * np.pi * prop.area) / (prop.perimeter ** 2) if prop.perimeter else 0
+            if prop.area > int(self.min_size_entry.get()) and roundness > float(self.min_roundness_entry.get()):
+                self.filtered_labels[self.labels == prop.label] = new_label
+                new_label += 1
+
+        self.boundaries = segmentation.find_boundaries(self.filtered_labels)
+
+        self.progress_bar.set(7 / 8)  # Final update, set to 100%
+        self.update_idletasks()
+
+        self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+        self.overlay_current_image()
+
+        self.progress_bar.set(1)  # Final update, set to 100%
+        self.update_idletasks()
 
     def process_image(self):
-        # Process the image with current parameters
-        pass  # Implement image processing logic
+        props_filtered = measure.regionprops(self.filtered_labels)
 
-    def add_data(self):
-        # Add processed data to the dataframe
-        pass  # Implement data addition logic
+        # Initialize lists to store area and diameter values
+        areas_nm2 = []
+        diameters_nm = []
+
+        scale_factor = float(self.scale_factor_entry.get())
+
+
+        for i, prop in enumerate(props_filtered, start=1):
+            # Area in pixels
+            area_pixels = prop.area
+            # Convert area from pixels to nm^2
+            area_nm2 = area_pixels * (scale_factor ** 2)
+
+            # Diameter in pixels for a circle with the same area as the particle
+            diameter_pixels = np.sqrt(4 * area_pixels / np.pi)
+            # Convert diameter from pixels to nm
+            diameter_nm = diameter_pixels * scale_factor
+
+            # Store the calculated values
+            areas_nm2.append(area_nm2)
+            diameters_nm.append(diameter_nm)
+
+        if hasattr(self, 'df_particles'):
+            new_data = pd.DataFrame({
+                'Index': np.arange(len(self.df_particles) + 1, len(self.df_particles) + 1 + len(areas_nm2)),
+                'Area_nm2': areas_nm2,
+                'Diameter_nm': diameters_nm
+            })
+            # Calculate diameter squared and cubed, add as new columns
+            new_data['Diameter_nm_squared'] = new_data['Diameter_nm'] ** 2
+            new_data['Diameter_nm_cubed'] = new_data['Diameter_nm'] ** 3
+
+            self.df_particles = pd.concat([self.df_particles, new_data], ignore_index=True)
+
+
+        else:
+            self.df_particles = pd.DataFrame({
+                'Index': np.arange(1, len(areas_nm2) + 1),
+                'Area_nm2': areas_nm2,
+                'Diameter_nm': diameters_nm
+            })
+
+            # Calculate diameter squared and cubed, add as new columns
+            self.df_particles['Diameter_nm_squared'] = self.df_particles['Diameter_nm'] ** 2
+            self.df_particles['Diameter_nm_cubed'] = self.df_particles['Diameter_nm'] ** 3
+
+
+
+
+        # Sum up the diameter squared and cubed columns
+        sum_diameter_squared = self.df_particles['Diameter_nm_squared'].sum()
+        sum_diameter_cubed = self.df_particles['Diameter_nm_cubed'].sum()
+
+        # Calculate the division of the sum of cubed by the sum of squared diameters
+        self.surface_average = sum_diameter_cubed / sum_diameter_squared
+
+        # Calculate the histogram
+        bin_edges = np.arange(0, self.df_particles['Diameter_nm'].max() + 0.5, 0.5)
+        hist, bins = np.histogram(self.df_particles['Diameter_nm'], bins=bin_edges, density=True)
+
+        self.bin_centers = 0.5 * (bins[1:] + bins[:-1])
+        bin_width = np.diff(bins)[0]  # Assuming uniform bin width
+
+        # Extend the x values for fitting by one bin width at the start and end
+        x_start = bins[0] - bin_width
+        x_end = bins[-1] + bin_width
+        self.x_extended = np.linspace(x_start, x_end, 100)
+
+        # Fit a log-normal distribution to the diameters_nm data
+        sigma, loc, scale = lognorm.fit(diameters_nm, floc=0)
+        dist_extended = lognorm(s=sigma, loc=loc, scale=scale)
+
+        # Generate PDF values for the extended x range
+        self.pdf_fitted_extended = dist_extended.pdf(self.x_extended)
+
+        # Find the maximum position (mode) of the log-normal distribution
+        self.max_position = scale  # For a log-normal distribution
+
+        # Calculate FWHM
+        self.fwhm = np.exp(np.log(scale) + (sigma ** 2) / 2) * (np.exp(sigma ** 2) - 1) ** 0.5
+
+        print(f"Max Position: {self.max_position} nm")
+        print(f"FWHM: {self.fwhm} nm")
+
+        # Clear the existing figure
+        self.figure.clf()
+        ax = self.figure.add_subplot(111)
+
+        # Plot the histogram
+        ax.bar(self.bin_centers, hist, width=np.diff(bins), alpha=0.5, label='Histogram')
+
+        # Plot the fitted distribution
+        ax.plot(self.x_extended, self.pdf_fitted_extended, 'r-', label='Log-normal fit')
+
+        ax.set_xlabel('Diameter (nm)')
+        ax.set_ylabel('Density')
+        ax.set_title('Particle Size Distribution and Fit')
+        ax.legend()
+
+        # Update the canvas to show the new plot
+        self.canvas.draw()
+
+    def clear_data(self):
+        self.df_particles = pd.DataFrame()
 
     def show_histogram(self):
         # Show the histogram of the collected data
         pass  # Implement histogram display logic
 
     def save_results(self):
-        # Save the results and parameters
-        pass  # Implement results saving logic
+        # Example save functionality, adjust as needed
+        self.df_particles.to_csv('particle_data.csv', index=False)
+        print("Data saved successfully.")
+        self.df_particles = pd.DataFrame()  # Clear the dataframe
+
 
 # Run the app
 if __name__ == '__main__':
