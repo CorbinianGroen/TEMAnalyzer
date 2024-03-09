@@ -20,6 +20,7 @@ border_width = 50  # Width of the border to mask out
 scale_factor = 0.169  # nm per pixel for converting measurements
 min_size = 150  # Minimum size threshold for particles
 min_roundness = 0.75  # Minimum roundness threshold for particles
+threshold_value = 0.3 #Trehshold for the distance map to exclude noise and get the larger peaks
 
 file = '\\\\10.162.95.1\\data\\RRDE\\Corbi\\01_TEM\\20240126_CG15\\20240126_CG15_SA-MAG_X100k_011.jpg'  # Path to the input image
 
@@ -80,7 +81,7 @@ if __name__ == '__main__':
     distance = ndimage.distance_transform_edt(binary_sauvola_inverted)
 
     # Apply a threshold to focus on significant regions, as previously done
-    threshold_value = 0.3 * np.max(distance)
+    threshold_value = threshold_value * np.max(distance)
     thresholded_distance = np.where(distance > threshold_value, distance, 0)
 
     # Find peaks directly on the thresholded distance transform
@@ -122,6 +123,8 @@ if __name__ == '__main__':
 
     # Find the boundaries of the filtered labels
     boundaries = segmentation.find_boundaries(filtered_labels)
+
+
 
     # Calculate properties of each region in the filtered_labels
     props_filtered = measure.regionprops(filtered_labels)
