@@ -14,6 +14,7 @@ from skimage.filters import threshold_sauvola
 from skimage import measure, segmentation, feature
 from scipy.stats import lognorm
 from concurrent.futures import ProcessPoolExecutor
+import os
 
 
 # Set the theme and color scheme
@@ -69,6 +70,8 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.executor = ProcessPoolExecutor(max_workers=4)
         self.processing_completed = False
+
+        self.filenames = []
 
         # Set default parameters
         self.parameters = {
@@ -270,10 +273,16 @@ class ImageAnalyzerApp(ctk.CTk):
         self.scale_factor_label.grid(row=16, column=1, pady=(10, 0), padx=(5, 10))
         self.scale_factor_entry.grid(row=17, column=1, pady=(5, 10), padx=(5, 10))
 
-        # Add other parameter controls here similarly
+        #Deselction initialization
+        self.deselect_mode_switch = ctk.CTkSwitch(self.parameters_frame, text="Deselection Mode", command=self.toggle_deselect_mode)
+        self.deselect_mode_switch.grid(row=17, column=2, pady=(5, 10), padx=(5, 10))
+        self.deselect_mode = False
+
+        self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
+
 
         # Process button
-        self.process_button = ctk.CTkButton(self.frame_right, text="Process Image", command=self.process_image)
+        self.process_button = ctk.CTkButton(self.frame_right, text="Process Image", command=self.process_data)
         self.process_button.pack(pady=10)
 
         # Add button
@@ -285,6 +294,18 @@ class ImageAnalyzerApp(ctk.CTk):
         self.save_button = ctk.CTkButton(self.frame_right, text="Save Results", command=self.save_results)
         self.save_button.pack(pady=10)
 
+    def toggle_deselect_mode(self):
+        # Assuming you have a reference to your ctk_switch as self.my_switch
+        activate = self.deselect_mode_switch.get()  # This should return True or False based on the switch state
+
+        if activate:
+            self.cid = self.figure.canvas.mpl_connect('button_press_event', self.on_figure_click)
+            self.deselect_mode = True
+        else:
+            if self.cid is not None:
+                self.figure.canvas.mpl_disconnect(self.cid)
+                self.cid = None
+            self.deselect_mode = False
 
     def set_and_start_processing(self, process_name, process_function):
         self.initial_process = process_name
@@ -376,21 +397,21 @@ class ImageAnalyzerApp(ctk.CTk):
     def open_image(self):
         self.processing_completed = False
         # Function to open and display a grayscale image with OpenCV using Matplotlib in Tkinter
-        filepath = filedialog.askopenfilename()
-        if not filepath:  # If no file is selected
+        self.filepath = filedialog.askopenfilename()
+        if not self.filepath:  # If no file is selected
             return
         self.progress_bar.set(0)
         self.update_idletasks()
         # Read the image in grayscale
-        self.image_cv = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+        self.image_cv = cv2.imread(self.filepath, cv2.IMREAD_GRAYSCALE)
+
+        self.original_image_size = self.image_cv.shape[::-1]  # This reverses the tuple to (width, height)
 
         self.current_image = {'image_data': self.image_cv, 'process_type': 'open_image'}
 
         self.plotting(image=self.image_cv, cmap='gray')
 
         self.process_all()
-
-
 
     def bandpass(self):
 
@@ -426,16 +447,11 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.saturate()  # Apply saturation
 
-
-
-
     def saturate(self):
 
         self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
 
         self.sauvola()  # Apply Sauvola thresholding
-
-
 
     def sauvola(self):
 
@@ -449,9 +465,6 @@ class ImageAnalyzerApp(ctk.CTk):
         future.add_done_callback(lambda future: self.on_sauvola_completed(future, 'gray'))
         #future.add_done_callback(self.on_sauvola_completed)
 
-
-
-
     def on_sauvola_completed(self, future, cmap):
         # Ensure GUI updates are scheduled on the main thread
         result = future.result()
@@ -459,14 +472,6 @@ class ImageAnalyzerApp(ctk.CTk):
         self.binary_sauvola_inverted = result
 
         self.after(0, self.mask)
-
-
-
-    def close_app(self):
-        # Properly shutdown the executor on application close
-        self.executor.shutdown()
-        self.destroy()
-
 
     def mask(self):
         self.processing_completed = False
@@ -481,9 +486,6 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.distance()  # Compute distance transform
 
-
-
-
     def distance(self):
         self.processing_completed = False
         # Compute the distance transform
@@ -494,8 +496,6 @@ class ImageAnalyzerApp(ctk.CTk):
         self.thresholded_distance = np.where(self.distances > threshold_value, self.distances, 0)
 
         self.watershed()  # Apply watershed segmentation
-
-
 
     def watershed(self):
         self.processing_completed = False
@@ -516,28 +516,6 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.after(0, self.particle)
 
-
-
-
-
-    '''
-    def watershed(self):
-
-        coordinates = feature.peak_local_max(self.thresholded_distance, min_distance=int(self.min_distance_entry.get()), exclude_border=False)
-
-        # Directly create unique markers for each peak without dilation
-        markers = np.zeros_like(self.distances, dtype=int)
-        markers[tuple(coordinates.T)] = np.arange(1, len(coordinates) + 1)
-
-        # Use the negative distance transform as input for watershed segmentation
-        self.labels = segmentation.watershed(-self.thresholded_distance, markers, mask=self.masked_sauvola)
-
-        self.plotting(image=self.labels, cmap='nipy_spectral')
-
-        self.particle()  # Particle analysis
-
-        self.current_image = {'image_data': self.labels, 'process_type': 'watershed'}
-    '''
     def particle(self):
         self.processing_completed = False
         # Prepare parameters for particle analysis
@@ -555,6 +533,7 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.processing_completed = True
 
+        self.process_image()
 
     def on_particle_completed(self, future, cmap):
         # This method is called when the particle_processing task completes
@@ -563,30 +542,6 @@ class ImageAnalyzerApp(ctk.CTk):
         self.boundaries = boundaries
         self.filtered_labels = filtered_labels
 
-
-
-    '''
-    def particle(self):
-
-        props = measure.regionprops(self.labels)
-
-        # Initialize a new label matrix for filtered regions
-        self.filtered_labels = np.zeros_like(self.labels)
-
-        # Assign new labels only to regions that meet the criteria
-        new_label = 1
-        for prop in props:
-            roundness = (4 * np.pi * prop.area) / (prop.perimeter ** 2) if prop.perimeter else 0
-            if prop.area > int(self.min_size_entry.get()) and roundness > float(self.min_roundness_entry.get()):
-                self.filtered_labels[self.labels == prop.label] = new_label
-                new_label += 1
-
-        self.boundaries = segmentation.find_boundaries(self.filtered_labels)
-
-        self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
-
-        self.plotting(image=self.boundaries, cmap='gray')
-    '''
     def overlay_current_image(self):
         if not hasattr(self, 'image_cv') or not hasattr(self, 'current_image'):
             print("Required attributes not set.")
@@ -776,7 +731,82 @@ class ImageAnalyzerApp(ctk.CTk):
         self.progress_bar.set(1)  # Final update, set to 100%
         self.update_idletasks()
 
+        self.process_image()
+
+    def on_figure_click(self, event):
+        if self.deselect_mode and event.inaxes:
+            # Matplotlib's event handler provides the accurate x, y coordinates with respect to the image
+            adjusted_x, adjusted_y = event.xdata, event.ydata
+
+            # Check if a particle is clicked and remove it
+            removed = self.remove_particle_if_clicked(int(adjusted_x), int(adjusted_y))
+            if removed:
+                self.redraw_image()
+        else:
+            pass
+
+    def remove_particle_if_clicked(self, x, y):
+        clicked_point = (int(y), int(x))
+        for index, row in self.particles_df.iterrows():
+            if clicked_point in row['Pixels']:
+                # Get the label of the particle to remove
+                label_to_remove = row['Label']
+                # Set pixels with this label to 0 in the labels matrix
+                self.filtered_labels[self.filtered_labels == label_to_remove] = 0
+                # Remove particle from DataFrame
+                self.particles_df.drop(index, inplace=True)
+                self.particles_df.reset_index(drop=True, inplace=True)
+
+                return True
+        return False
+
+    def redraw_image(self):
+        # Use self.labels to regenerate any derived images (e.g., boundary overlays)
+        # and update the display accordingly
+        # This might involve re-creating the overlay image and displaying it on the canvas
+
+        self.boundaries = segmentation.find_boundaries(self.filtered_labels)
+
+        self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+
+        self.overlay_current_image()
+
+
     def process_image(self):
+
+        self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
+
+        props_filtered = measure.regionprops(self.filtered_labels)
+
+        # Temporary list to hold data before creating a DataFrame
+        new_rows = []
+
+        # Iterate over each property object in props_filtered
+        for prop in props_filtered:
+            pixels = [(i[0], i[1]) for i in prop.coords]  # List of pixel coordinates for this particle
+            new_rows.append({'Label': prop.label, 'Pixels': pixels})
+
+        # Convert new_rows to a DataFrame
+        new_rows_df = pd.DataFrame(new_rows)
+
+        # If there are new rows to add
+        if not new_rows_df.empty:
+            # Concatenate the new rows with the existing DataFrame
+            self.particles_df = pd.concat([self.particles_df, new_rows_df], ignore_index=True)
+
+        print(self.particles_df)
+
+    def update_image_display(self):
+        # Placeholder for redrawing the image and updating the GUI
+        pass
+
+
+    def process_data(self):
+
+        if self.filepath:  # If a file is selected
+            filename = os.path.basename(self.filepath)
+            self.filenames.append(filename)
+        ##### here we need the deselected particle list then
         props_filtered = measure.regionprops(self.filtered_labels)
 
         # Initialize lists to store area and diameter values
@@ -802,8 +832,9 @@ class ImageAnalyzerApp(ctk.CTk):
             diameters_nm.append(diameter_nm)
 
         if hasattr(self, 'df_particles'):
+            last_index = self.df_particles['Index'].max()
             new_data = pd.DataFrame({
-                'Index': np.arange(len(self.df_particles) + 1, len(self.df_particles) + 1 + len(areas_nm2)),
+                'Index': np.arange(last_index + 1, last_index + 1 + len(areas_nm2)),
                 'Area_nm2': areas_nm2,
                 'Diameter_nm': diameters_nm
             })
@@ -837,14 +868,14 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Calculate the histogram
         bin_edges = np.arange(0, self.df_particles['Diameter_nm'].max() + 0.5, 0.5)
-        hist, bins = np.histogram(self.df_particles['Diameter_nm'], bins=bin_edges, density=True)
+        self.hist, self.bins = np.histogram(self.df_particles['Diameter_nm'], bins=bin_edges, density=True)
 
-        self.bin_centers = 0.5 * (bins[1:] + bins[:-1])
-        bin_width = np.diff(bins)[0]  # Assuming uniform bin width
+        self.bin_centers = 0.5 * (self.bins[1:] + self.bins[:-1])
+        bin_width = np.diff(self.bins)[0]  # Assuming uniform bin width
 
         # Extend the x values for fitting by one bin width at the start and end
-        x_start = bins[0] - bin_width
-        x_end = bins[-1] + bin_width
+        x_start = self.bins[0] - bin_width
+        x_end = self.bins[-1] + bin_width
         self.x_extended = np.linspace(x_start, x_end, 100)
 
         # Fit a log-normal distribution to the diameters_nm data
@@ -860,15 +891,13 @@ class ImageAnalyzerApp(ctk.CTk):
         # Calculate FWHM
         self.fwhm = np.exp(np.log(scale) + (sigma ** 2) / 2) * (np.exp(sigma ** 2) - 1) ** 0.5
 
-        print(f"Max Position: {self.max_position} nm")
-        print(f"FWHM: {self.fwhm} nm")
 
         # Clear the existing figure
         self.figure.clf()
         ax = self.figure.add_subplot(111)
 
         # Plot the histogram
-        ax.bar(self.bin_centers, hist, width=np.diff(bins), alpha=0.5, label='Histogram')
+        ax.bar(self.bin_centers, self.hist, width=np.diff(self.bins), alpha=0.5, label='Histogram')
 
         # Plot the fitted distribution
         ax.plot(self.x_extended, self.pdf_fitted_extended, 'r-', label='Log-normal fit')
@@ -877,22 +906,72 @@ class ImageAnalyzerApp(ctk.CTk):
         ax.set_ylabel('Density')
         ax.set_title('Particle Size Distribution and Fit')
         ax.legend()
-
+        self.figure.subplots_adjust(left=0.1, right=0.95, top=0.9, bottom=0.1)
         # Update the canvas to show the new plot
         self.canvas.draw()
 
     def clear_data(self):
         self.df_particles = pd.DataFrame()
 
-    def show_histogram(self):
-        # Show the histogram of the collected data
-        pass  # Implement histogram display logic
-
     def save_results(self):
-        # Example save functionality, adjust as needed
-        self.df_particles.to_csv('particle_data.csv', index=False)
-        print("Data saved successfully.")
-        self.df_particles = pd.DataFrame()  # Clear the dataframe
+        initial_filename = "analysis_results.txt"  # Default filename
+        if self.filenames:
+            initial_filename = f"{os.path.splitext(self.filenames[0])[0]}_particle_analysis_plot.txt"
+
+        # Asking the user for the save path with the initial filename suggestion
+        save_path = filedialog.asksaveasfilename(initialfile=initial_filename, filetypes=[("Text files", "*.txt")],
+                                                 defaultextension=".txt")
+
+        initial_filename2 = "analysis_results.txt"  # Default filename
+        if self.filenames:
+            initial_filename2 = f"{os.path.splitext(self.filenames[0])[0]}_particle_analysis_results.txt"
+
+        # Asking the user for the save path with the initial filename suggestion
+        save_path2 = filedialog.asksaveasfilename(initialfile=initial_filename2, filetypes=[("Text files", "*.txt")],
+                                                 defaultextension=".txt")
+
+        # Proceed only if the user selected a save path
+        if not save_path:
+            return
+
+        histogram_data = pd.DataFrame({
+            'Bin_centers': self.bin_centers,
+            'Hist_counts': self.hist * np.diff(self.bins),  # Total count per bin
+            'Hist_density': self.hist,  # Normalized counts per bin
+        })
+        fit_data = pd.DataFrame({
+            'X_axis': self.x_extended,
+            'Y_axis': self.pdf_fitted_extended,
+        })
+
+        # Concatenate histogram and fit data
+        combined_data = pd.concat([histogram_data, fit_data], axis=1)
+
+        # Prepare results dictionary with summary metrics and filenames
+        results = {
+            'Filenames': "; ".join(self.filenames),  # Join filenames into a single string
+            'Average_Diameter_nm': self.df_particles['Diameter_nm'].mean(),
+            'Surface_Average': self.surface_average,
+            'Max_Position_nm': self.max_position,
+            'FWHM_nm': self.fwhm,
+        }
+
+        # Convert results dictionary to DataFrame
+        results_df = pd.DataFrame([results])
+
+        # Combine all data into one DataFrame
+        final_combined_data = pd.concat([self.df_particles, combined_data], axis=1)
+
+        # Save combined data to the specified file path
+        final_combined_data.to_csv(save_path, index=False, sep='\t')
+        results_df.to_csv(save_path2, index=False, sep='\t')
+
+    def on_close(self):
+        # Properly shutdown the executor on application close
+        self.executor.shutdown()
+        self.destroy()
+        if self.cid is not None:
+            self.figure.canvas.mpl_disconnect(self.cid)
 
 
 # Run the app
