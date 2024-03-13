@@ -963,25 +963,23 @@ class ImageAnalyzerApp(ctk.CTk):
         self.update_results_display(results)
 
     def save_results(self):
-        initial_filename = "analysis_results.txt"  # Default filename
+        initial_filename = "analysis_results"  # Default filename without extension
         if self.filenames:
-            initial_filename = f"{os.path.splitext(self.filenames[0])[0]}_particle_analysis_plot.txt"
+            initial_filename = os.path.splitext(self.filenames[0])[0]
 
-        # Asking the user for the save path with the initial filename suggestion
-        save_path = filedialog.asksaveasfilename(initialfile=initial_filename, filetypes=[("Text files", "*.txt")],
-                                                 defaultextension=".txt")
+        # Ask for the base path (without specifying filetypes to allow for a generic base path)
+        save_base_path = filedialog.asksaveasfilename(initialfile=initial_filename, defaultextension="")
 
-        initial_filename2 = "analysis_results.txt"  # Default filename
-        if self.filenames:
-            initial_filename2 = f"{os.path.splitext(self.filenames[0])[0]}_particle_analysis_results.txt"
+        # Check if the user provided a path, if not return to avoid errors
+        if not save_base_path:
 
-        # Asking the user for the save path with the initial filename suggestion
-        save_path2 = filedialog.asksaveasfilename(initialfile=initial_filename2, filetypes=[("Text files", "*.txt")],
-                                                 defaultextension=".txt")
-
-        # Proceed only if the user selected a save path
-        if not save_path:
             return
+
+        # Construct specific filenames based on the base path
+        save_path = f"{save_base_path}_particle_analysis_plot.txt"
+        save_path2 = f"{save_base_path}_particle_analysis_results.txt"
+        save_path3 = f"{save_base_path}_boundaries.jpg"
+        save_path4 = f"{save_base_path}_labels.jpg"
 
         histogram_data = pd.DataFrame({
             'Bin_centers': self.bin_centers,
@@ -1010,6 +1008,17 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Combine all data into one DataFrame
         final_combined_data = pd.concat([self.df_particles, combined_data], axis=1)
+
+
+        boundaries_uint8 = (self.boundaries * 255).astype(np.uint8)
+        # Save the boundaries image
+        cv2.imwrite(save_path3, boundaries_uint8)
+
+
+        labels_uint8 = (self.filtered_labels > 0).astype(np.uint8) * 255
+        # Save the filtered_labels image
+        cv2.imwrite(save_path4, labels_uint8)
+
 
         # Save combined data to the specified file path
         final_combined_data.to_csv(save_path, index=False, sep='\t')
