@@ -1061,15 +1061,18 @@ class ImageAnalyzerApp(ctk.CTk):
         self.df_particles = pd.DataFrame()
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
 
-        results = {
+        self.results = {
             'Filenames': '',
+            'Number_of_Paticles': '',
             'Average_Diameter_nm': '',
-            'Surface_Average_nm': '',
+            'Average_Diameter_nm_std': '',
+            'Surface_Average': '',
+            'Expected_ECSA_m²/g': '',
             'Max_Position_nm': '',
             'FWHM_nm': '',
         }
 
-        self.update_results_display(results)
+        self.update_results_display(self.results)
 
     def save_results(self):
         initial_filename = "analysis_results"  # Default filename without extension
@@ -1128,6 +1131,8 @@ class ImageAnalyzerApp(ctk.CTk):
         # Save combined data to the specified file path
         final_combined_data.to_csv(save_path, index=False, sep='\t')
         results_df.to_csv(save_path2, index=False, sep='\t')
+
+        self.clear_data()
 
     def on_close(self):
         # Properly shutdown the executor on application close
