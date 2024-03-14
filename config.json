@@ -1,0 +1,15 @@
+{
+    "low_cutoff": 30,
+    "high_cutoff": 400,
+    "a": 1.5,
+    "b": 5,
+    "window_size": 1351,
+    "k": 0.1,
+    "border_width": 50,
+    "min_size": 150,
+    "min_roundness": 0.75,
+    "threshold_value": 0.3,
+    "min_distance": 3,
+    "scale_factor": 0.169,
+    "density": 21.5
+}

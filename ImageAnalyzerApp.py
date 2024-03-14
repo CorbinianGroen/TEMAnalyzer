@@ -15,19 +15,68 @@ from skimage import measure, segmentation, feature
 from scipy.stats import lognorm
 from concurrent.futures import ProcessPoolExecutor
 import os
+import json
+
+
+class ToolTip(object):
+    def __init__(self, widget, text='widget info'):
+        self.widget = widget
+        self.text = text
+        self.widget.bind("<Enter>", self.enter)
+        self.widget.bind("<Leave>", self.leave)
+        self.tooltip_window = None
+
+    def enter(self, event=None):
+        if self.tooltip_window:
+            return
+
+        # Get widget bounding box
+        x, y, cx, cy = self.widget.bbox("insert")
+        # Calculate position relative to root window
+        x = self.widget.winfo_rootx() - 160
+        y += self.widget.winfo_rooty() + 20
+
+        # Create the tooltip window
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+
+        # Check if tooltip goes beyond the screen width
+        screen_width = self.widget.winfo_screenwidth()
+        tooltip_width = 150  # Assuming a fixed tooltip width for simplicity, adjust as needed
+        if x + tooltip_width > screen_width:
+            x = self.widget.winfo_rootx() - tooltip_width - 10  # Position to the left of the widget
+
+        self.tooltip_window.wm_geometry("+%d+%d" % (x, y))
+
+        label = tk.Label(self.tooltip_window, text=self.text, justify='left',
+                         background="#f0f0f0", relief='flat', borderwidth=0,
+                         font=("times", "8", "normal"))
+        label.pack(ipadx=1)
+
+    def leave(self, event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
 
 
 # Set the theme and color scheme
 ctk.set_appearance_mode("dark")  # 'light' (default), 'dark'
 ctk.set_default_color_theme("blue")  # 'blue' (default), 'green', 'dark-blue'
 
+
 def sauvola_processing(params):
     img, window_size, k = params['img'], params['window_size'], params['k']
     img_uint8 = (img * 255).astype(np.uint8)
+    if window_size % 2 == 0:
+        window_size = window_size + 1
+
+
     thresh_sauvola = threshold_sauvola(img_uint8, window_size=window_size, k=k)
     binary_sauvola = img_uint8 > thresh_sauvola
     binary_sauvola_inverted = np.invert(binary_sauvola)
     return binary_sauvola_inverted
+
 
 def particle_processing(labels, min_size, min_roundness):
     """
@@ -45,6 +94,7 @@ def particle_processing(labels, min_size, min_roundness):
 
     boundaries = segmentation.find_boundaries(filtered_labels)
     return filtered_labels, boundaries
+
 
 def watershed_processing(params):
     from skimage import feature, segmentation
@@ -86,8 +136,12 @@ class ImageAnalyzerApp(ctk.CTk):
             'min_roundness': 0.75,
             'threshold_value': 0.3,
             'min_distance': 3,
-            'scale_factor': 0.169
+            'scale_factor': 0.169,
+            'density': 21.5
         }
+
+        self.load_parameters()
+
         self.current_image = None
         self.labels = None
         # Create the main layout frames
@@ -113,11 +167,11 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Open image button
         self.open_button = ctk.CTkButton(self.frame_right, text="Open Image", command=self.open_image)
-        self.open_button.pack(pady=10)
+        self.open_button.pack(pady=5)
 
         # Initialize Progress Bar in the right frame below the open button
         self.progress_bar = ctk.CTkProgressBar(self.frame_right, width=200, height=20)
-        self.progress_bar.pack(pady=10)
+        self.progress_bar.pack(pady=5)
         self.progress_bar.set(0)  # Set progress to 0%
 
         # Parameters frame within the right frame
@@ -131,20 +185,19 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Parameter: low_cutoff frequency
         self.low_cutoff_label = ctk.CTkLabel(self.parameters_frame, text="Low Cutoff Frequency")
-        #self.low_cutoff_label.pack()
+        # self.low_cutoff_label.pack()
         self.low_cutoff_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.low_cutoff_entry.pack()
+        # self.low_cutoff_entry.pack()
         self.low_cutoff_entry.insert(0, self.parameters['low_cutoff'])
-
 
         # Parameter: high_cutoff frequency
         self.high_cutoff_label = ctk.CTkLabel(self.parameters_frame, text="High Cutoff Frequency")
-        #self.high_cutoff_label.pack()
+        # self.high_cutoff_label.pack()
         self.high_cutoff_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.high_cutoff_entry.pack()
+        # self.high_cutoff_entry.pack()
         self.high_cutoff_entry.insert(0, self.parameters['high_cutoff'])
         self.high_cutoff_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('bandpass', self.bandpass))
-        #self.high_cutoff_button.pack(pady=10)
+        # self.high_cutoff_button.pack(pady=10)
 
         self.low_cutoff_label.grid(row=0, column=0, pady=(5, 0), padx=(5, 2))
         self.low_cutoff_entry.grid(row=1, column=0, pady=(2, 5), padx=(5, 2))
@@ -152,21 +205,24 @@ class ImageAnalyzerApp(ctk.CTk):
         self.high_cutoff_entry.grid(row=1, column=1, pady=(2, 5), padx=(2, 5))
         self.high_cutoff_button.grid(row=1, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.low_cutoff_label, text='High Cutoff Frequency: This is the upper threshold frequency for the bandpass filter.\nFrequencies higher than this value will be attenuated,\nhelping to remove high-frequency noise from the image.')
+        ToolTip(widget=self.high_cutoff_label, text='Low Cutoff Frequency: This is the lower threshold frequency for the bandpass filter.\nFrequencies lower than this value will be attenuated,\nwhich helps in removing background variation and large-scale structures that are not of interest.')
+
         # Parameter: a
         self.a_label = ctk.CTkLabel(self.parameters_frame, text="a")
-        #self.a_label.pack()
+        # self.a_label.pack()
         self.a_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.a_entry.pack()
+        # self.a_entry.pack()
         self.a_entry.insert(0, self.parameters['a'])
 
         # Parameter: b
         self.b_label = ctk.CTkLabel(self.parameters_frame, text="b")
-        #self.b_label.pack()
+        # self.b_label.pack()
         self.b_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.b_entry.pack()
+        # self.b_entry.pack()
         self.b_entry.insert(0, self.parameters['b'])
         self.b_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('saturate', self.saturate))
-        #self.b_button.pack(pady=10)
+        # self.b_button.pack(pady=10)
 
         self.a_label.grid(row=2, column=0, pady=(5, 2), padx=(5, 2))
         self.b_label.grid(row=2, column=1, pady=(5, 2), padx=(2, 5))
@@ -174,21 +230,24 @@ class ImageAnalyzerApp(ctk.CTk):
         self.b_entry.grid(row=3, column=1, pady=(2, 5), padx=(2, 5))
         self.b_button.grid(row=3, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.a_label, text='This parameter controls the contrast of the image during saturation.\nIncreasing alpha enhances the contrast, making the particles\nmore distinguishable from the background.')
+        ToolTip(widget=self.b_label, text='This parameter adjusts the brightness of the image post-contrast adjustment.\nIncreasing beta lightens the image, while decreasing it makes the image darker.')
+
         # Parameter: window size
         self.window_size_label = ctk.CTkLabel(self.parameters_frame, text="window size")
-        #self.window_size_label.pack()
+        # self.window_size_label.pack()
         self.window_size_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.window_size_entry.pack()
+        # self.window_size_entry.pack()
         self.window_size_entry.insert(0, self.parameters['window_size'])
 
         # Parameter: k
         self.k_label = ctk.CTkLabel(self.parameters_frame, text="k")
-        #self.k_label.pack()
+        # self.k_label.pack()
         self.k_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.k_entry.pack()
+        # self.k_entry.pack()
         self.k_entry.insert(0, self.parameters['k'])
         self.k_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('sauvola', self.sauvola))
-        #self.k_button.pack(pady=10)
+        # self.k_button.pack(pady=10)
 
         self.window_size_label.grid(row=4, column=0, pady=(5, 0), padx=(5, 2))
         self.k_label.grid(row=4, column=1, pady=(5, 0), padx=(2, 5))
@@ -196,60 +255,69 @@ class ImageAnalyzerApp(ctk.CTk):
         self.k_entry.grid(row=5, column=1, pady=(2, 5), padx=(2, 5))
         self.k_button.grid(row=5, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.window_size_label, text='Window Size: The size of the local region around each pixel\nfor which the threshold is calculated in Sauvola thresholding.\nA larger window considers more of the local context,\nwhich is useful for varying backgrounds.')
+        ToolTip(widget=self.k_label, text='k: A parameter that controls the sensitivity of the Sauvola method to local variations in contrast.\nHigher values make the algorithm more sensitive to shadows and other subtle features..')
+
         # Parameter: border_width
         self.border_label = ctk.CTkLabel(self.parameters_frame, text="border width removal")
-        #self.border_label.pack()
+        # self.border_label.pack()
         self.border_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.border_entry.pack()
+        # self.border_entry.pack()
         self.border_entry.insert(0, self.parameters['border_width'])
         self.border_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('mask', self.mask))
-        #self.border_button.pack(pady=10)
+        # self.border_button.pack(pady=10)
 
         self.border_label.grid(row=6, column=1, pady=(5, 0), padx=(5, 2))
         self.border_entry.grid(row=7, column=1, pady=(2, 5), padx=(5, 2))
         self.border_button.grid(row=7, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.border_label, text='Border Width: The width of the border removed from the edge of the image.\nThis is used to eliminate edge effects and artifacts that are not representative of the sample.')
+
         # Parameter: threshold_value
         self.threshold_value_label = ctk.CTkLabel(self.parameters_frame, text="Particle detection")
-        #self.threshold_value_label.pack()
+        # self.threshold_value_label.pack()
         self.threshold_value_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.threshold_value_entry.pack()
+        # self.threshold_value_entry.pack()
         self.threshold_value_entry.insert(0, self.parameters['threshold_value'])
         self.threshold_value_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('distance', self.distance))
-        #self.threshold_value_button.pack(pady=10)
+        # self.threshold_value_button.pack(pady=10)
 
         self.threshold_value_label.grid(row=8, column=1, pady=(5, 0), padx=(5, 2))
         self.threshold_value_entry.grid(row=9, column=1, pady=(2, 5), padx=(5, 2))
         self.threshold_value_button.grid(row=9, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.threshold_value_label, text='Threshold Value: In the context of the distance transform,\nthis threshold value is used to isolate prominent features from the background\nby focusing on regions that are sufficiently far from the background.')
+
         # Parameter: min_distance
         self.min_distance_label = ctk.CTkLabel(self.parameters_frame, text="Watershed")
-        #self.min_distance_label.pack()
+        # self.min_distance_label.pack()
         self.min_distance_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.min_distance_entry.pack()
+        # self.min_distance_entry.pack()
         self.min_distance_entry.insert(0, self.parameters['min_distance'])
         self.min_distance_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('watershed', self.watershed))
-        #self.min_distance_button.pack(pady=10)
+        # self.min_distance_button.pack(pady=10)
 
         self.min_distance_label.grid(row=10, column=1, pady=(5, 0), padx=(5, 2))
         self.min_distance_entry.grid(row=11, column=1, pady=(2, 5), padx=(5, 2))
         self.min_distance_button.grid(row=11, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
+        ToolTip(widget=self.min_distance_label, text='Min Distance: The minimum distance between peaks in the distance transform\nused in watershed segmentation. It helps in ensuring that the watershed algorithm\ndoes not over-segment the image by considering too closely spaced local maxima\nas separate particles.')
+
         # Parameter: min_size
         self.min_size_label = ctk.CTkLabel(self.parameters_frame, text="min size")
-        #self.min_size_label.pack()
+        # self.min_size_label.pack()
         self.min_size_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.min_size_entry.pack()
+        # self.min_size_entry.pack()
         self.min_size_entry.insert(0, self.parameters['min_size'])
 
         # Parameter: min_roundness
         self.min_roundness_label = ctk.CTkLabel(self.parameters_frame, text="roundness")
-        #self.min_roundness_label.pack()
+        # self.min_roundness_label.pack()
         self.min_roundness_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.min_roundness_entry.pack()
+        # self.min_roundness_entry.pack()
         self.min_roundness_entry.insert(0, self.parameters['min_roundness'])
         self.min_roundness_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('particle', self.particle))
-        #self.min_roundness_button.pack(pady=10)
+        # self.min_roundness_button.pack(pady=10)
 
         self.min_size_label.grid(row=12, column=0, pady=(5, 0), padx=(5, 2))
         self.min_roundness_label.grid(row=12, column=1, pady=(5, 0), padx=(2, 5))
@@ -257,54 +325,89 @@ class ImageAnalyzerApp(ctk.CTk):
         self.min_roundness_entry.grid(row=13, column=1, pady=(2, 5), padx=(2, 5))
         self.min_roundness_button.grid(row=13, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
-        #OverlayButton
+        ToolTip(widget=self.min_size_label, text='Min Size: The minimum size (area in pixels)\na particle must have to be considered in the analysis.\nThis helps in excluding too small particles that might be\nnoise or irrelevant.')
+        ToolTip(widget=self.min_roundness_label, text='Min Roundness: The minimum roundness a particle must have to be included in the analysis.\nRoundness is a measure of how circular a particle is,\nhelping to exclude particles that are too elongated or irregular.')
+
+        # OverlayButton
         self.overlay_button = ctk.CTkButton(self.parameters_frame, text="Overlay", command=self.overlay_current_image)
-        #self.overlay_button.pack(pady=10)
+        # self.overlay_button.pack(pady=10)
         self.overlay_button.grid(row=15, column=2, pady=(5, 10), padx=(5, 10), sticky="ew")
 
         # Parameter: scale_factor
         self.scale_factor_label = ctk.CTkLabel(self.parameters_frame, text="nm / pixel")
-        #self.scale_factor_label.pack()
+        # self.scale_factor_label.pack()
         self.scale_factor_entry = ctk.CTkEntry(self.parameters_frame)
-        #self.scale_factor_entry.pack()
+        # self.scale_factor_entry.pack()
         self.scale_factor_entry.insert(0, self.parameters['scale_factor'])
 
         self.scale_factor_label.grid(row=16, column=1, pady=(5, 0), padx=(2, 5))
         self.scale_factor_entry.grid(row=17, column=1, pady=(2, 5), padx=(2, 5))
 
-        #Deselction initialization
+        ToolTip(widget=self.scale_factor_label, text='Scale Factor: The scale factor relates pixel size to physical distance,\nallowing measurements in the image to be converted to real-world units')
+
+        # Parameter: density
+        self.density_label = ctk.CTkLabel(self.parameters_frame, text="NM Density")
+        # self.scale_factor_label.pack()
+        self.density_entry = ctk.CTkEntry(self.parameters_frame)
+        # self.scale_factor_entry.pack()
+        self.density_entry.insert(0, self.parameters['density'])
+
+        self.density_label.grid(row=16, column=0, pady=(5, 0), padx=(5, 2))
+        self.density_entry.grid(row=17, column=0, pady=(2, 5), padx=(5, 2))
+
+        ToolTip(widget=self.density_label, text='Density: Defines the density of the particles analyzed. This will be used for the calculation of the expected ECSA')
+
+        # Deselection initialization
         self.deselect_mode_switch = ctk.CTkSwitch(self.parameters_frame, text="Deselection Mode", command=self.toggle_deselect_mode)
         self.deselect_mode_switch.grid(row=17, column=2, pady=(2, 5), padx=(2, 5))
         self.deselect_mode = False
 
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
 
+        self.process_buttons_frame = ctk.CTkFrame(self.frame_right)
+        self.process_buttons_frame.pack(fill=tk.BOTH, pady=5, expand=False)
 
         # Process button
-        self.process_button = ctk.CTkButton(self.frame_right, text="Process Image", command=self.process_data)
-        self.process_button.pack(pady=10)
+        self.process_button = ctk.CTkButton(self.process_buttons_frame, text="Process Image", command=self.process_data)
+        self.process_button.pack(side=tk.RIGHT, padx=5, pady=0, fill=tk.X, expand=True)
+
+        self.save_config_button = ctk.CTkButton(self.process_buttons_frame, text="Save Configuration", command=self.save_parameters)
+        self.save_config_button.pack(side=tk.LEFT, padx=5, pady=0, fill=tk.X, expand=True)
 
         # Results display frame
-        self.results_frame = ctk.CTkFrame(self.frame_right)
-        self.results_frame.pack(fill=tk.BOTH, pady=(5, 5))
+        self.results_frame = ctk.CTkScrollableFrame(self.frame_right, width=300, height=100, corner_radius=0, fg_color="transparent")
+        self.results_frame.pack(fill='both', expand=True)
         self.setup_results_display()
 
         self.control_buttons_frame = ctk.CTkFrame(self.frame_right)
-        self.control_buttons_frame.pack(fill=tk.BOTH, pady=5)
+        self.control_buttons_frame.pack(fill=tk.BOTH, pady=5, expand=False)
 
         # Add and Save buttons
         self.add_button = ctk.CTkButton(self.control_buttons_frame, text="Clear", command=self.clear_data)
-        self.add_button.pack(side=tk.LEFT, padx=5, pady=10)
+        self.add_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
 
         self.save_button = ctk.CTkButton(self.control_buttons_frame, text="Save Results", command=self.save_results)
-        self.save_button.pack(side=tk.RIGHT, padx=5, pady=10)
+        self.save_button.pack(side=tk.RIGHT, padx=5, pady=10, fill=tk.X, expand=True)
+
+    def load_parameters(self):
+        try:
+            with open('config.json', 'r') as config_file:
+                self.parameters = json.load(config_file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+
+    def save_parameters(self):
+        with open('config.json', 'w') as config_file:
+            json.dump(self.parameters, config_file, indent=4)
 
     def setup_results_display(self):
         # Labels for displaying results
         self.results_labels = {
             'filenames': ctk.CTkLabel(self.results_frame, text="Filenames:"),
+            'number_of_particles': ctk.CTkLabel(self.results_frame, text="Number of Particles:"),
             'average_diameter': ctk.CTkLabel(self.results_frame, text="Average Diameter:"),
             'surface_average': ctk.CTkLabel(self.results_frame, text="Surface Average:"),
+            'expected_ecsa': ctk.CTkLabel(self.results_frame, text="Expected ECSA:"),
             'max_position': ctk.CTkLabel(self.results_frame, text="Max Position:"),
             'fwhm': ctk.CTkLabel(self.results_frame, text="FWHM:")
         }
@@ -315,10 +418,12 @@ class ImageAnalyzerApp(ctk.CTk):
 
     def update_results_display(self, results):
         self.results_labels['filenames'].configure(text=f"Filenames: {results['Filenames']}")
-        self.results_labels['average_diameter'].configure(text=f"Average Diameter: {results['Average_Diameter_nm']} nm")
-        self.results_labels['surface_average'].configure(text=f"Surface Average: {results['Surface_Average']}")
-        self.results_labels['max_position'].configure(text=f"Max Position: {results['Max_Position_nm']} nm")
-        self.results_labels['fwhm'].configure(text=f"FWHM: {results['FWHM_nm']} nm")
+        self.results_labels['number_of_particles'].configure(text=f"Number of Particles: {results['Number_of_Paticles']}")
+        self.results_labels['average_diameter'].configure(text=f"Average Diameter: {results['Average_Diameter_nm']:.2f} \u00B1 {results['Average_Diameter_nm_std']:.2f} nm")
+        self.results_labels['surface_average'].configure(text=f"Surface Average: {results['Surface_Average']:.2f} nm")
+        self.results_labels['expected_ecsa'].configure(text=f"Expected ECSA: {results['Expected_ECSA_m²/g']:.2f} m²/g")
+        self.results_labels['max_position'].configure(text=f"Max Position: {results['Max_Position_nm']:.2f} nm")
+        self.results_labels['fwhm'].configure(text=f"FWHM: {results['FWHM_nm']:.2f} nm")
 
     def toggle_deselect_mode(self):
         # Assuming you have a reference to your ctk_switch as self.my_switch
@@ -373,7 +478,7 @@ class ImageAnalyzerApp(ctk.CTk):
         # Reset the flag
         self.processing_completed = False
 
-    def plotting(self, image, cmap=None):
+    def plotting(self, image, cmap=None, xlim=None, ylim=None):
         canvas_width, canvas_height = self.canvas_widget.winfo_width(), self.canvas_widget.winfo_height()
         dpi = self.figure.dpi
         fig_width = canvas_width / dpi
@@ -418,6 +523,11 @@ class ImageAnalyzerApp(ctk.CTk):
             ax.imshow(image, cmap=cmap, aspect='equal')
 
         ax.axis('off')
+
+        if xlim and ylim:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+
         self.canvas.draw()
 
     def open_image(self):
@@ -489,7 +599,7 @@ class ImageAnalyzerApp(ctk.CTk):
 
         future = self.executor.submit(sauvola_processing, params)
         future.add_done_callback(lambda future: self.on_sauvola_completed(future, 'gray'))
-        #future.add_done_callback(self.on_sauvola_completed)
+        # future.add_done_callback(self.on_sauvola_completed)
 
     def on_sauvola_completed(self, future, cmap):
         # Ensure GUI updates are scheduled on the main thread
@@ -554,8 +664,7 @@ class ImageAnalyzerApp(ctk.CTk):
         # Submit the particle analysis task for parallel processing
         future = self.executor.submit(particle_processing, **params)
         future.add_done_callback(lambda future: self.on_particle_completed(future, 'gray'))
-        #future.add_done_callback(self.on_particle_completed)
-
+        # future.add_done_callback(self.on_particle_completed)
 
         self.processing_completed = True
 
@@ -568,7 +677,7 @@ class ImageAnalyzerApp(ctk.CTk):
         self.boundaries = boundaries
         self.filtered_labels = filtered_labels
 
-    def overlay_current_image(self):
+    def overlay_current_image(self, xlim=None, ylim=None):
         if not hasattr(self, 'image_cv') or not hasattr(self, 'current_image'):
             print("Required attributes not set.")
             return
@@ -633,10 +742,9 @@ class ImageAnalyzerApp(ctk.CTk):
         else:
             pass
 
-
         # Update the Matplotlib figure for display
 
-        self.plotting(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
+        self.plotting(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB), xlim=xlim, ylim=ylim)
         '''self.figure.clf()
         ax = self.figure.add_subplot(111)
         ax.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
@@ -787,15 +895,19 @@ class ImageAnalyzerApp(ctk.CTk):
         return False
 
     def redraw_image(self):
-        # Use self.labels to regenerate any derived images (e.g., boundary overlays)
-        # and update the display accordingly
-        # This might involve re-creating the overlay image and displaying it on the canvas
+        # Ensure there are axes to work with
+        if not hasattr(self, 'figure') or not self.figure.axes:
+            return
 
+        ax = self.figure.gca()  # Get current axes
+        xlim = ax.get_xlim()  # Save current x-axis view limits
+        ylim = ax.get_ylim()  # Save current y-axis view limits
+
+        # Proceed with redrawing your image
         self.boundaries = segmentation.find_boundaries(self.filtered_labels)
-
         self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+        self.overlay_current_image(xlim=xlim, ylim=ylim)
 
-        self.overlay_current_image()
 
 
     def process_image(self):
@@ -820,12 +932,9 @@ class ImageAnalyzerApp(ctk.CTk):
             # Concatenate the new rows with the existing DataFrame
             self.particles_df = pd.concat([self.particles_df, new_rows_df], ignore_index=True)
 
-
-
     def update_image_display(self):
         # Placeholder for redrawing the image and updating the GUI
         pass
-
 
     def process_data(self):
 
@@ -840,7 +949,6 @@ class ImageAnalyzerApp(ctk.CTk):
         diameters_nm = []
 
         scale_factor = float(self.scale_factor_entry.get())
-
 
         for i, prop in enumerate(props_filtered, start=1):
             # Area in pixels
@@ -882,9 +990,6 @@ class ImageAnalyzerApp(ctk.CTk):
             self.df_particles['Diameter_nm_squared'] = self.df_particles['Diameter_nm'] ** 2
             self.df_particles['Diameter_nm_cubed'] = self.df_particles['Diameter_nm'] ** 3
 
-
-
-
         # Sum up the diameter squared and cubed columns
         sum_diameter_squared = self.df_particles['Diameter_nm_squared'].sum()
         sum_diameter_cubed = self.df_particles['Diameter_nm_cubed'].sum()
@@ -917,6 +1022,7 @@ class ImageAnalyzerApp(ctk.CTk):
         # Calculate FWHM
         self.fwhm = np.exp(np.log(scale) + (sigma ** 2) / 2) * (np.exp(sigma ** 2) - 1) ** 0.5
 
+        self.ecsa = 6 / ((self.surface_average * (10 ** -9)) * (float(self.density_entry.get()) * (10 ** 6)))
 
         # Clear the existing figure
         self.figure.clf()
@@ -936,18 +1042,21 @@ class ImageAnalyzerApp(ctk.CTk):
         # Update the canvas to show the new plot
         self.canvas.draw()
 
-        results = {
+        self.results = {
             'Filenames': "; ".join(self.filenames),  # Join filenames into a single string
+            'Number_of_Paticles': self.df_particles['Index'].max(),
             'Average_Diameter_nm': self.df_particles['Diameter_nm'].mean(),
+            'Average_Diameter_nm_std': self.df_particles['Diameter_nm'].std(),
             'Surface_Average': self.surface_average,
+            'Expected_ECSA_m²/g': self.ecsa,
             'Max_Position_nm': self.max_position,
             'FWHM_nm': self.fwhm,
         }
 
-        self.update_results_display(results)
+        self.update_results_display(self.results)
 
     def clear_data(self):
-        #does currently clear everything
+        # does currently clear everything
 
         self.df_particles = pd.DataFrame()
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
@@ -972,7 +1081,6 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Check if the user provided a path, if not return to avoid errors
         if not save_base_path:
-
             return
 
         # Construct specific filenames based on the base path
@@ -995,30 +1103,27 @@ class ImageAnalyzerApp(ctk.CTk):
         combined_data = pd.concat([histogram_data, fit_data], axis=1)
 
         # Prepare results dictionary with summary metrics and filenames
-        results = {
+        '''results = {
             'Filenames': "; ".join(self.filenames),  # Join filenames into a single string
             'Average_Diameter_nm': self.df_particles['Diameter_nm'].mean(),
             'Surface_Average': self.surface_average,
             'Max_Position_nm': self.max_position,
             'FWHM_nm': self.fwhm,
-        }
-
+        }'''
+        results = self.results
         # Convert results dictionary to DataFrame
         results_df = pd.DataFrame([results])
 
         # Combine all data into one DataFrame
         final_combined_data = pd.concat([self.df_particles, combined_data], axis=1)
 
-
         boundaries_uint8 = (self.boundaries * 255).astype(np.uint8)
         # Save the boundaries image
         cv2.imwrite(save_path3, boundaries_uint8)
 
-
         labels_uint8 = (self.filtered_labels > 0).astype(np.uint8) * 255
         # Save the filtered_labels image
         cv2.imwrite(save_path4, labels_uint8)
-
 
         # Save combined data to the specified file path
         final_combined_data.to_csv(save_path, index=False, sep='\t')
@@ -1036,5 +1141,3 @@ class ImageAnalyzerApp(ctk.CTk):
 if __name__ == '__main__':
     app = ImageAnalyzerApp()
     app.mainloop()
-
-
