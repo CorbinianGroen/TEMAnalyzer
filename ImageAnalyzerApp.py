@@ -1064,15 +1064,23 @@ class ImageAnalyzerApp(ctk.CTk):
         self.results = {
             'Filenames': '',
             'Number_of_Paticles': '',
-            'Average_Diameter_nm': '',
-            'Average_Diameter_nm_std': '',
-            'Surface_Average': '',
-            'Expected_ECSA_m²/g': '',
-            'Max_Position_nm': '',
-            'FWHM_nm': '',
+            'Average_Diameter_nm': 0,
+            'Average_Diameter_nm_std': 0,
+            'Surface_Average': 0,
+            'Expected_ECSA_m²/g': 0,
+            'Max_Position_nm': 0,
+            'FWHM_nm': 0,
         }
 
         self.update_results_display(self.results)
+
+        self.results_labels['filenames'].configure(text=f"Filenames: ")
+        self.results_labels['number_of_particles'].configure(text=f"Number of Particles: ")
+        self.results_labels['average_diameter'].configure(text=f"Average Diameter: ")
+        self.results_labels['surface_average'].configure(text=f"Surface Average: ")
+        self.results_labels['expected_ecsa'].configure(text=f"Expected ECSA: ")
+        self.results_labels['max_position'].configure(text=f"Max Position: ")
+        self.results_labels['fwhm'].configure(text=f"FWHM: ")
 
     def save_results(self):
         initial_filename = "analysis_results"  # Default filename without extension
