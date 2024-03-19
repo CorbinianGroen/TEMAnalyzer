@@ -17,6 +17,9 @@ from concurrent.futures import ProcessPoolExecutor
 import os
 import json
 
+# add a range of what number should be
+# benchmark it -> compare lose boundaries to thight boundaries and deselect the errenous ones
+# compared to handpicked
 
 class ToolTip(object):
     def __init__(self, widget, text='widget info'):
@@ -364,6 +367,14 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
 
+        # Selection initialization
+        self.select_mode_switch = ctk.CTkSwitch(self.parameters_frame, text="Selection Mode",
+                                                  command=self.toggle_select_mode)
+        self.select_mode_switch.grid(row=18, column=2, pady=(2, 5), padx=(2, 5))
+        self.select_mode = False
+
+        self.particles_df_added = pd.DataFrame(columns=['Label', 'Pixels'])
+
         self.process_buttons_frame = ctk.CTkFrame(self.frame_right)
         self.process_buttons_frame.pack(fill=tk.BOTH, pady=5, expand=False)
 
@@ -437,6 +448,19 @@ class ImageAnalyzerApp(ctk.CTk):
                 self.figure.canvas.mpl_disconnect(self.cid)
                 self.cid = None
             self.deselect_mode = False
+
+    def toggle_select_mode(self):
+        # Assuming you have a reference to your ctk_switch as self.my_switch
+        activate = self.select_mode_switch.get()  # This should return True or False based on the switch state
+
+        if activate:
+            self.cid = self.figure.canvas.mpl_connect('button_press_event', self.on_figure_click_select)
+            self.select_mode = True
+        else:
+            if self.cid is not None:
+                self.figure.canvas.mpl_disconnect(self.cid)
+                self.cid = None
+            self.select_mode = False
 
     def set_and_start_processing(self, process_name, process_function):
         self.initial_process = process_name
@@ -909,6 +933,32 @@ class ImageAnalyzerApp(ctk.CTk):
         self.overlay_current_image(xlim=xlim, ylim=ylim)
 
 
+    def on_figure_click_select(self, event):
+        if self.select_mode and event.inaxes:
+            # Matplotlib's event handler provides the accurate x, y coordinates with respect to the image
+            adjust_x, adjust_y = event.xdata, event.ydata
+
+        added = self.add_particle_if_clicked(int(adjust_x), int(adjust_y))
+        if added:
+            self.redraw_image()
+
+        else:
+            pass
+
+    def add_particle_if_clicked(self, x, y):
+        # Convert the float x, y to integer pixel coordinates
+        ix, iy = int(x), int(y)
+
+        # Check if the coordinates are within the image boundaries
+        if 0 <= ix < self.image_cv.shape[1] and 0 <= iy < self.image_cv.shape[0]:
+            # Get the grayscale value at the clicked pixel
+            gray_value = self.image_cv[iy, ix]
+
+
+
+            return True  # Indicating a grayscale value was obtained and thresholding was attempted.
+        else:
+            return False  # Click was outside the image boundaries.
 
     def process_image(self):
 
