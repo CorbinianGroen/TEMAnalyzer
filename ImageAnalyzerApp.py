@@ -11,7 +11,7 @@ import numpy as np
 from scipy import ndimage
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from skimage.filters import threshold_sauvola
-from skimage import measure, segmentation, feature
+from skimage import measure, segmentation, feature, morphology
 from scipy.stats import lognorm
 from concurrent.futures import ProcessPoolExecutor
 import os
@@ -362,7 +362,7 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Deselection initialization
         self.deselect_mode_switch = ctk.CTkSwitch(self.parameters_frame, text="Deselection Mode", command=self.toggle_deselect_mode)
-        self.deselect_mode_switch.grid(row=17, column=2, pady=(2, 5), padx=(2, 5))
+        self.deselect_mode_switch.grid(row=16, column=2, pady=(2, 5), padx=(2, 5))
         self.deselect_mode = False
 
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
@@ -370,21 +370,33 @@ class ImageAnalyzerApp(ctk.CTk):
         # Selection initialization
         self.select_mode_switch = ctk.CTkSwitch(self.parameters_frame, text="Selection Mode",
                                                   command=self.toggle_select_mode)
-        self.select_mode_switch.grid(row=18, column=2, pady=(2, 5), padx=(2, 5))
+        self.select_mode_switch.grid(row=17, column=2, pady=(2, 5), padx=(2, 5))
         self.select_mode = False
 
         self.particles_df_added = pd.DataFrame(columns=['Label', 'Pixels'])
 
         self.process_buttons_frame = ctk.CTkFrame(self.frame_right)
-        self.process_buttons_frame.pack(fill=tk.BOTH, pady=5, expand=False)
+        self.process_buttons_frame.pack(fill=tk.BOTH, pady=0, expand=False)
 
-        # Process button
+        self.process_buttons_frame.grid_columnconfigure(0, weight=1)
+        self.process_buttons_frame.grid_columnconfigure(1, weight=1)
+        self.process_buttons_frame.grid_columnconfigure(2, weight=1)
+
+        # Create and position the Save Configuration button
+        self.save_config_button = ctk.CTkButton(self.process_buttons_frame, text="Save Configuration",
+                                                command=self.save_parameters)
+        self.save_config_button.grid(row=0, column=0, padx=5, pady=0,
+                                     sticky='ew')  # Adjust padx and pady as needed for spacing
+
+        # Create and position the Reset View button
+        self.reset_view_button = ctk.CTkButton(self.process_buttons_frame, text="Reset View", command=self.reset_view)
+        self.reset_view_button.grid(row=0, column=1, padx=5, pady=0,
+                                    sticky='ew')  # Adjust padx and pady as needed for spacing
+
+        # Create and position the Process Image button
         self.process_button = ctk.CTkButton(self.process_buttons_frame, text="Process Image", command=self.process_data)
-        self.process_button.pack(side=tk.RIGHT, padx=5, pady=0, fill=tk.X, expand=True)
-
-        self.save_config_button = ctk.CTkButton(self.process_buttons_frame, text="Save Configuration", command=self.save_parameters)
-        self.save_config_button.pack(side=tk.LEFT, padx=5, pady=0, fill=tk.X, expand=True)
-
+        self.process_button.grid(row=0, column=2, padx=5, pady=0,
+                                 sticky='ew')  # Adjust padx and pady as needed for spacing
         # Results display frame
         self.results_frame = ctk.CTkScrollableFrame(self.frame_right, width=300, height=100, corner_radius=0, fg_color="transparent")
         self.results_frame.pack(fill='both', expand=True)
@@ -932,7 +944,8 @@ class ImageAnalyzerApp(ctk.CTk):
         self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
         self.overlay_current_image(xlim=xlim, ylim=ylim)
 
-
+    def reset_view(self):
+        self.overlay_current_image()
     def on_figure_click_select(self, event):
         if self.select_mode and event.inaxes:
             # Matplotlib's event handler provides the accurate x, y coordinates with respect to the image
@@ -954,7 +967,56 @@ class ImageAnalyzerApp(ctk.CTk):
             # Get the grayscale value at the clicked pixel
             gray_value = self.image_cv[iy, ix]
 
+            ax = self.figure.gca()
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
 
+            # Convert axis limits to integer pixel indices
+            # Note: This assumes the image directly maps to the data coordinates.
+            x_min, x_max = int(xlim[0]), int(xlim[1])
+            y_min, y_max = int(ylim[0]), int(ylim[1])
+
+            # Crop the original grayscale image based on the zoomed area
+            # Note: Matplotlib's y-axis starts from the top for images, so we invert y_min and y_max for cropping.
+            cropped_image = self.image_cv[y_max:y_min, x_min:x_max]
+
+            binary_image = np.where(cropped_image <= (gray_value * 1.5), 255, 0).astype(np.uint8)
+
+            # Close holes inside particles if necessary
+            binary_image = morphology.closing(binary_image, morphology.square(3))
+
+            # Label connected components
+            labeled_image = measure.label(binary_image)
+
+            # Find the label of the particle at the click location (adjusting for crop)
+            click_label = labeled_image[
+                min(labeled_image.shape[0] - 1, iy - max(0, y_max)), min(labeled_image.shape[1] - 1,
+                                                                         ix - max(0, x_min))]
+
+            # Create a mask for the selected particle
+            particle_mask = (labeled_image == click_label)
+            boundaries = segmentation.find_boundaries(particle_mask)
+
+            # Overlay boundaries on the cropped image
+            overlay_image = cropped_image.copy()
+            overlay_image[boundaries] = 255  # Make boundaries white
+
+            new_label = self.filtered_labels.max() + 1
+
+            # Prepare an empty mask for the whole image with the same shape as self.filtered_labels
+            full_mask = np.zeros_like(self.filtered_labels)
+
+            # Place the particle_mask into the full_mask at the correct location
+            # Ensure the coordinates do not exceed the original image's dimensions
+            full_mask[y_max:y_max + particle_mask.shape[0], x_min:x_min + particle_mask.shape[1]] = particle_mask
+
+            # Assign the new label to the particle_mask region in full_mask
+            full_mask[full_mask > 0] = new_label
+
+            # Merge this new mask into self.filtered_labels
+            self.filtered_labels[full_mask == new_label] = new_label
+
+            self.process_image()
 
             return True  # Indicating a grayscale value was obtained and thresholding was attempted.
         else:
