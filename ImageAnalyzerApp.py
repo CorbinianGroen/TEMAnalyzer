@@ -449,30 +449,36 @@ class ImageAnalyzerApp(ctk.CTk):
         self.results_labels['fwhm'].configure(text=f"FWHM: {results['FWHM_nm']:.2f} nm")
 
     def toggle_deselect_mode(self):
-        # Assuming you have a reference to your ctk_switch as self.my_switch
         activate = self.deselect_mode_switch.get()  # This should return True or False based on the switch state
 
         if activate:
             self.cid = self.figure.canvas.mpl_connect('button_press_event', self.on_figure_click)
             self.deselect_mode = True
+            # Disable the select mode switch
+            self.select_mode_switch.configure(state="disabled")
         else:
             if self.cid is not None:
                 self.figure.canvas.mpl_disconnect(self.cid)
                 self.cid = None
             self.deselect_mode = False
+            # Re-enable the select mode switch
+            self.select_mode_switch.configure(state="normal")
 
     def toggle_select_mode(self):
-        # Assuming you have a reference to your ctk_switch as self.my_switch
         activate = self.select_mode_switch.get()  # This should return True or False based on the switch state
 
         if activate:
             self.cid = self.figure.canvas.mpl_connect('button_press_event', self.on_figure_click_select)
             self.select_mode = True
+            # Disable the deselect mode switch
+            self.deselect_mode_switch.configure(state="disabled")
         else:
             if self.cid is not None:
                 self.figure.canvas.mpl_disconnect(self.cid)
                 self.cid = None
             self.select_mode = False
+            # Re-enable the deselect mode switch
+            self.deselect_mode_switch.configure(state="normal")
 
     def set_and_start_processing(self, process_name, process_function):
         self.initial_process = process_name
