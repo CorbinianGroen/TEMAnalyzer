@@ -1,6 +1,7 @@
 {
     "low_cutoff": 30,
     "high_cutoff": 400,
+    "blur": 251,
     "a": 1.5,
     "b": 5,
     "window_size": 1351,

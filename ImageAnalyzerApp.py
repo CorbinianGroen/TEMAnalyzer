@@ -130,6 +130,7 @@ class ImageAnalyzerApp(ctk.CTk):
         self.parameters = {
             'low_cutoff': 30,
             'high_cutoff': 400,
+            'blur': 251,
             'a': 1.5,
             'b': 5,
             'window_size': 1351,
@@ -210,6 +211,24 @@ class ImageAnalyzerApp(ctk.CTk):
 
         ToolTip(widget=self.low_cutoff_label, text='High Cutoff Frequency: This is the upper threshold frequency for the bandpass filter.\nFrequencies higher than this value will be attenuated,\nhelping to remove high-frequency noise from the image.')
         ToolTip(widget=self.high_cutoff_label, text='Low Cutoff Frequency: This is the lower threshold frequency for the bandpass filter.\nFrequencies lower than this value will be attenuated,\nwhich helps in removing background variation and large-scale structures that are not of interest.')
+
+        # Add a switch to toggle between frequency control visibility
+        self.frequency_switch = ctk.CTkSwitch(self.parameters_frame, text="Toggle Frequency",
+                                              command=self.toggle_frequency_controls)
+        self.frequency_switch.grid(row=0, column=2, pady=(2, 5), padx=(2, 5))
+
+        # Initialize new controls for alternative processing option but don't place them in the grid yet
+        self.blur_label = ctk.CTkLabel(self.parameters_frame, text="Gaussian Blur")
+        self.blur_entry = ctk.CTkEntry(self.parameters_frame)
+        self.blur_entry.insert(0, self.parameters['blur'])
+        self.blur_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('bandpass', self.blur))
+
+        # You can initially hide the new option controls
+        self.blur_label.grid_remove()
+        self.blur_entry.grid_remove()
+        self.blur_button.grid_remove()
+
+
 
         # Parameter: a
         self.a_label = ctk.CTkLabel(self.parameters_frame, text="a")
@@ -412,6 +431,32 @@ class ImageAnalyzerApp(ctk.CTk):
         self.save_button = ctk.CTkButton(self.control_buttons_frame, text="Save Results", command=self.save_results)
         self.save_button.pack(side=tk.RIGHT, padx=5, pady=10, fill=tk.X, expand=True)
 
+    def toggle_frequency_controls(self):
+        if self.frequency_switch.get():  # If the switch is on
+            # Hide low and high frequency controls
+            self.low_cutoff_label.grid_remove()
+            self.low_cutoff_entry.grid_remove()
+            self.high_cutoff_label.grid_remove()
+            self.high_cutoff_entry.grid_remove()
+            self.high_cutoff_button.grid_remove()
+
+            # Show new controls for the alternative processing option
+            self.blur_label.grid(row=0, column=0, pady=(5, 0), padx=(5, 2))
+            self.blur_entry.grid(row=1, column=0, pady=(2, 5), padx=(5, 2))
+            self.blur_button.grid(row=1, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
+        else:
+            # Show low and high frequency controls
+            self.low_cutoff_label.grid()
+            self.low_cutoff_entry.grid()
+            self.high_cutoff_label.grid()
+            self.high_cutoff_entry.grid()
+            self.high_cutoff_button.grid()
+
+            # Hide new controls for the alternative processing option
+            self.blur_label.grid_remove()
+            self.blur_entry.grid_remove()
+            self.blur_button.grid_remove()
+
     def load_parameters(self):
         try:
             with open('config.json', 'r') as config_file:
@@ -421,6 +466,24 @@ class ImageAnalyzerApp(ctk.CTk):
 
     def save_parameters(self):
         with open('config.json', 'w') as config_file:
+            self.parameters = {
+                'low_cutoff': self.low_cutoff_entry.get(),
+                'high_cutoff': self.high_cutoff_entry.get(),
+                'blur': self.blur_entry.get(),
+                'a': self.a_entry.get(),
+                'b': self.b_entry.get(),
+                'window_size': self.window_size_entry.get(),
+                'k': self.k_entry.get(),
+                'border_width': self.border_entry.get(),
+                'min_size': self.min_size_entry.get(),
+                'min_roundness': self.min_roundness_entry.get(),
+                'threshold_value': self.threshold_value_entry.get(),
+                'min_distance': self.min_distance_entry.get(),
+                'scale_factor': self.scale_factor_entry.get(),
+                'density': self.density_entry.get()
+            }
+
+
             json.dump(self.parameters, config_file, indent=4)
 
     def setup_results_display(self):
@@ -625,6 +688,20 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.saturate()  # Apply saturation
 
+    def blur(self):
+
+        ksize = int(self.blur_entry.get())
+        if ksize % 2 == 0:
+            ksize += 1  # Make ksize odd if it's even
+
+        blurred = cv2.GaussianBlur(self.image_cv, (ksize, ksize), 0)
+
+        self.img_back = cv2.subtract(blurred, self.image_cv)
+
+        self.saturate()  # Apply saturation
+
+
+
     def saturate(self):
 
         self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
@@ -794,6 +871,10 @@ class ImageAnalyzerApp(ctk.CTk):
         self.canvas.draw()'''
 
     def process_all(self):
+        #blurred = cv2.GaussianBlur(self.image_cv, (251, 251), 0)
+
+        #self.img_back = cv2.subtract(blurred, self.image_cv)
+
         f_image = fft2(self.image_cv)
         fshift = fftshift(f_image)
 
@@ -1177,6 +1258,7 @@ class ImageAnalyzerApp(ctk.CTk):
         # does currently clear everything
 
         self.df_particles = pd.DataFrame()
+        del self.df_particles
         self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
 
         self.results = {
