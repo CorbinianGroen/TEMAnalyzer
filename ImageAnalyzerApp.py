@@ -20,6 +20,10 @@ import json
 # add a range of what number should be
 # benchmark it -> compare lose boundaries to thight boundaries and deselect the errenous ones
 # compared to handpicked
+# wenn man viel rumclicked bei show dann geht deselction nicht merh richtig
+
+
+
 
 class ToolTip(object):
     def __init__(self, widget, text='widget info'):
@@ -128,6 +132,7 @@ class ImageAnalyzerApp(ctk.CTk):
 
         # Set default parameters
         self.parameters = {
+            'switch_state': 'False',
             'low_cutoff': 30,
             'high_cutoff': 400,
             'blur': 251,
@@ -215,6 +220,11 @@ class ImageAnalyzerApp(ctk.CTk):
         # Add a switch to toggle between frequency control visibility
         self.frequency_switch = ctk.CTkSwitch(self.parameters_frame, text="Toggle Frequency",
                                               command=self.toggle_frequency_controls)
+        if self.parameters['switch_state'] == 'True':
+            self.frequency_switch.select()
+        if self.parameters['switch_state'] == 'False':
+            self.frequency_switch.deselect()
+
         self.frequency_switch.grid(row=0, column=2, pady=(2, 5), padx=(2, 5))
 
         # Initialize new controls for alternative processing option but don't place them in the grid yet
@@ -223,12 +233,12 @@ class ImageAnalyzerApp(ctk.CTk):
         self.blur_entry.insert(0, self.parameters['blur'])
         self.blur_button = ctk.CTkButton(self.parameters_frame, text="Show", command=lambda: self.set_and_start_processing('bandpass', self.blur))
 
-        # You can initially hide the new option controls
-        self.blur_label.grid_remove()
-        self.blur_entry.grid_remove()
-        self.blur_button.grid_remove()
+        # Show new controls for the alternative processing option
+        self.blur_label.grid(row=0, column=0, pady=(5, 0), padx=(5, 2))
+        self.blur_entry.grid(row=1, column=0, pady=(2, 5), padx=(5, 2))
+        self.blur_button.grid(row=1, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
 
-
+        self.toggle_frequency_controls()  # Call the function to show/hide controls based on the switch state
 
         # Parameter: a
         self.a_label = ctk.CTkLabel(self.parameters_frame, text="a")
@@ -433,6 +443,7 @@ class ImageAnalyzerApp(ctk.CTk):
 
     def toggle_frequency_controls(self):
         if self.frequency_switch.get():  # If the switch is on
+            self.switch_state = 'True'
             # Hide low and high frequency controls
             self.low_cutoff_label.grid_remove()
             self.low_cutoff_entry.grid_remove()
@@ -441,10 +452,11 @@ class ImageAnalyzerApp(ctk.CTk):
             self.high_cutoff_button.grid_remove()
 
             # Show new controls for the alternative processing option
-            self.blur_label.grid(row=0, column=0, pady=(5, 0), padx=(5, 2))
-            self.blur_entry.grid(row=1, column=0, pady=(2, 5), padx=(5, 2))
-            self.blur_button.grid(row=1, column=2, pady=(2, 5), padx=(2, 5), sticky="ew")
+            self.blur_label.grid()
+            self.blur_entry.grid()
+            self.blur_button.grid()
         else:
+            self.switch_state = 'False'
             # Show low and high frequency controls
             self.low_cutoff_label.grid()
             self.low_cutoff_entry.grid()
@@ -467,6 +479,7 @@ class ImageAnalyzerApp(ctk.CTk):
     def save_parameters(self):
         with open('config.json', 'w') as config_file:
             self.parameters = {
+                'switch_state': self.switch_state,
                 'low_cutoff': self.low_cutoff_entry.get(),
                 'high_cutoff': self.high_cutoff_entry.get(),
                 'blur': self.blur_entry.get(),
@@ -580,6 +593,10 @@ class ImageAnalyzerApp(ctk.CTk):
         elif self.initial_process == "particle":
             self.plotting(image=self.boundaries, cmap='gray')
             self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+        elif self.initial_process == "initial":
+            self.plotting(image=self.boundaries, cmap='gray')
+            self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
+            self.overlay_current_image()
         # Reset the flag
         self.processing_completed = False
 
@@ -686,6 +703,9 @@ class ImageAnalyzerApp(ctk.CTk):
         img_back = ifft2(f_ishift)
         self.img_back = np.abs(img_back)
 
+        self.progress_bar.set(1 / 8)  # Update progress
+        self.update_idletasks()
+
         self.saturate()  # Apply saturation
 
     def blur(self):
@@ -698,6 +718,9 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.img_back = cv2.subtract(blurred, self.image_cv)
 
+        self.progress_bar.set(1 / 8)  # Update progress
+        self.update_idletasks()
+
         self.saturate()  # Apply saturation
 
 
@@ -705,6 +728,9 @@ class ImageAnalyzerApp(ctk.CTk):
     def saturate(self):
 
         self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
+
+        self.progress_bar.set(2 / 8)  # Update progress
+        self.update_idletasks()
 
         self.sauvola()  # Apply Sauvola thresholding
 
@@ -726,6 +752,9 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.binary_sauvola_inverted = result
 
+        self.progress_bar.set(3 / 8)  # Update progress
+        self.update_idletasks()
+
         self.after(0, self.mask)
 
     def mask(self):
@@ -739,6 +768,9 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.masked_sauvola = masked_sauvola
 
+        self.progress_bar.set(4 / 8)  # Update progress
+        self.update_idletasks()
+
         self.distance()  # Compute distance transform
 
     def distance(self):
@@ -749,6 +781,9 @@ class ImageAnalyzerApp(ctk.CTk):
         # Apply a threshold to focus on significant regions, as previously done
         threshold_value = float(self.threshold_value_entry.get()) * np.max(self.distances)
         self.thresholded_distance = np.where(self.distances > threshold_value, self.distances, 0)
+
+        self.progress_bar.set(5 / 8)  # Update progress
+        self.update_idletasks()
 
         self.watershed()  # Apply watershed segmentation
 
@@ -769,6 +804,9 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.labels = result
 
+        self.progress_bar.set(6 / 8)  # Update progress
+        self.update_idletasks()
+
         self.after(0, self.particle)
 
     def particle(self):
@@ -785,9 +823,9 @@ class ImageAnalyzerApp(ctk.CTk):
         future.add_done_callback(lambda future: self.on_particle_completed(future, 'gray'))
         # future.add_done_callback(self.on_particle_completed)
 
-        self.processing_completed = True
 
-        self.process_image()
+
+
 
     def on_particle_completed(self, future, cmap):
         # This method is called when the particle_processing task completes
@@ -795,6 +833,13 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.boundaries = boundaries
         self.filtered_labels = filtered_labels
+
+        self.progress_bar.set(7 / 8)  # Update progress
+        self.update_idletasks()
+
+        self.processing_completed = True
+
+        self.after(0, self.process_image())
 
     def overlay_current_image(self, xlim=None, ylim=None):
         if not hasattr(self, 'image_cv') or not hasattr(self, 'current_image'):
@@ -864,131 +909,23 @@ class ImageAnalyzerApp(ctk.CTk):
         # Update the Matplotlib figure for display
 
         self.plotting(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB), xlim=xlim, ylim=ylim)
-        '''self.figure.clf()
-        ax = self.figure.add_subplot(111)
-        ax.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
-        ax.axis('off')
-        self.canvas.draw()'''
+
 
     def process_all(self):
-        #blurred = cv2.GaussianBlur(self.image_cv, (251, 251), 0)
 
-        #self.img_back = cv2.subtract(blurred, self.image_cv)
+        self.initial_process = 'initial'
+        self.processing_completed = False
 
-        f_image = fft2(self.image_cv)
-        fshift = fftshift(f_image)
+        if self.parameters['switch_state'] == 'False':
+            self.bandpass()
 
-        # 3. Create a bandpass filter
-        rows, cols = self.image_cv.shape
-        crow, ccol = rows // 2, cols // 2
+        if self.parameters['switch_state'] == 'True':
+            self.blur()
 
-        # Cut-off frequencies
-        low_cutoff = int(self.low_cutoff_entry.get())
-        high_cutoff = int(self.high_cutoff_entry.get())
 
-        # Create a mask first with 1s for a low-pass filter
-        mask = np.zeros((rows, cols), dtype=np.float32)
-        y, x = np.ogrid[:rows, :cols]
-        center = (crow, ccol)
-        dist_from_center = np.sqrt((x - center[1]) ** 2 + (y - center[0]) ** 2)
+        self.start_processing_check()
 
-        # Low pass filter mask
-        mask[dist_from_center <= high_cutoff] = 1
-        # High pass filter mask (inverted to create band-pass)
-        mask[dist_from_center < low_cutoff] = 0
 
-        # 4. Apply the filter
-        fshift_filtered = fshift * mask
-
-        # 5. Inverse Fourier Transform
-        f_ishift = ifftshift(fshift_filtered)
-        img_back = ifft2(f_ishift)
-        self.img_back = np.abs(img_back)
-
-        self.progress_bar.set(1 / 8)  # Update progress
-        self.update_idletasks()
-
-        self.img_back_sat = cv2.convertScaleAbs(self.img_back, alpha=float(self.a_entry.get()), beta=float(self.b_entry.get()))
-
-        self.progress_bar.set(2 / 8)  # Update progress
-        self.update_idletasks()
-
-        # convert to 8-bit (grayscale)
-
-        img_uint8 = (self.img_back_sat * 255).astype(np.uint8)
-
-        # Apply Sauvola thresholding -> make a binary picture from the greyscale picture with local thresholding
-        thresh_sauvola = threshold_sauvola(img_uint8, window_size=int(self.window_size_entry.get()),
-                                           k=float(self.k_entry.get()))
-        binary_sauvola = img_uint8 > thresh_sauvola
-
-        # invert the picture to make particles white and background black -> needed for detection
-
-        self.binary_sauvola_inverted = np.invert(binary_sauvola)
-
-        self.progress_bar.set(3 / 8)  # Update progress
-        self.update_idletasks()
-
-        border_width = int(self.border_entry.get())
-        masked_sauvola = self.binary_sauvola_inverted
-        masked_sauvola[:border_width, :] = 0  # Top edge
-        masked_sauvola[-border_width:, :] = 0  # Bottom edge
-        masked_sauvola[:, :border_width] = 0  # Left edge
-        masked_sauvola[:, -border_width:] = 0
-
-        self.masked_sauvola = masked_sauvola
-
-        self.progress_bar.set(4 / 8)  # Update progress
-        self.update_idletasks()
-
-        # Compute the distance transform
-        self.distances = ndimage.distance_transform_edt(self.masked_sauvola)
-
-        # Apply a threshold to focus on significant regions, as previously done
-        threshold_value = float(self.threshold_value_entry.get()) * np.max(self.distances)
-        self.thresholded_distance = np.where(self.distances > threshold_value, self.distances, 0)
-
-        self.progress_bar.set(5 / 8)  # Update progress
-        self.update_idletasks()
-
-        coordinates = feature.peak_local_max(self.thresholded_distance, min_distance=int(self.min_distance_entry.get()),
-                                             exclude_border=False)
-
-        # Directly create unique markers for each peak without dilation
-        markers = np.zeros_like(self.distances, dtype=int)
-        markers[tuple(coordinates.T)] = np.arange(1, len(coordinates) + 1)
-
-        # Use the negative distance transform as input for watershed segmentation
-        self.labels = segmentation.watershed(-self.thresholded_distance, markers, mask=self.masked_sauvola)
-
-        self.progress_bar.set(6 / 8)  # Update progress
-        self.update_idletasks()
-
-        props = measure.regionprops(self.labels)
-
-        # Initialize a new label matrix for filtered regions
-        self.filtered_labels = np.zeros_like(self.labels)
-
-        # Assign new labels only to regions that meet the criteria
-        new_label = 1
-        for prop in props:
-            roundness = (4 * np.pi * prop.area) / (prop.perimeter ** 2) if prop.perimeter else 0
-            if prop.area > int(self.min_size_entry.get()) and roundness > float(self.min_roundness_entry.get()):
-                self.filtered_labels[self.labels == prop.label] = new_label
-                new_label += 1
-
-        self.boundaries = segmentation.find_boundaries(self.filtered_labels)
-
-        self.progress_bar.set(7 / 8)  # Final update, set to 100%
-        self.update_idletasks()
-
-        self.current_image = {'image_data': self.boundaries, 'process_type': 'particle'}
-        self.overlay_current_image()
-
-        self.progress_bar.set(1)  # Final update, set to 100%
-        self.update_idletasks()
-
-        self.process_image()
 
     def on_figure_click(self, event):
         if self.deselect_mode and event.inaxes:
@@ -1116,20 +1053,19 @@ class ImageAnalyzerApp(ctk.CTk):
         props_filtered = measure.regionprops(self.filtered_labels)
 
         # Temporary list to hold data before creating a DataFrame
-        new_rows = []
+        rows = []
 
         # Iterate over each property object in props_filtered
         for prop in props_filtered:
             pixels = [(i[0], i[1]) for i in prop.coords]  # List of pixel coordinates for this particle
-            new_rows.append({'Label': prop.label, 'Pixels': pixels})
+            rows.append({'Label': prop.label, 'Pixels': pixels})
 
         # Convert new_rows to a DataFrame
-        new_rows_df = pd.DataFrame(new_rows)
+        new_rows_df = pd.DataFrame(rows, columns=['Label', 'Pixels'])
 
-        # If there are new rows to add
-        if not new_rows_df.empty:
-            # Concatenate the new rows with the existing DataFrame
-            self.particles_df = pd.concat([self.particles_df, new_rows_df], ignore_index=True)
+        self.particles_df = new_rows_df
+        self.progress_bar.set(1)  # Update progress
+        self.update_idletasks()
 
     def update_image_display(self):
         # Placeholder for redrawing the image and updating the GUI
@@ -1209,7 +1145,8 @@ class ImageAnalyzerApp(ctk.CTk):
         self.x_extended = np.linspace(x_start, x_end, 100)
 
         # Fit a log-normal distribution to the diameters_nm data
-        sigma, loc, scale = lognorm.fit(diameters_nm, floc=0)
+        diameter_nm_list = self.df_particles['Diameter_nm'].tolist()
+        sigma, loc, scale = lognorm.fit(diameter_nm_list, floc=0)
         dist_extended = lognorm(s=sigma, loc=loc, scale=scale)
 
         # Generate PDF values for the extended x range
@@ -1259,7 +1196,14 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.df_particles = pd.DataFrame()
         del self.df_particles
-        self.particles_df = pd.DataFrame(columns=['Label', 'Pixels'])
+
+        self.surface_average = ''
+        self.ecsa = ''
+        self.max_position = ''
+        self.fwhm= ''
+
+
+        self.filenames = []
 
         self.results = {
             'Filenames': '',
