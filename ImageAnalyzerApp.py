@@ -151,6 +151,10 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.load_parameters()
 
+        self.counter = 0 #counter to save the pictures
+        self.boundaries_uint8 = {} #initailizes the save for boundaries and labels
+        self.labels_uint8 = {}
+
         self.current_image = None
         self.labels = None
         # Create the main layout frames
@@ -1191,6 +1195,17 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.update_results_display(self.results)
 
+        #save the pictures
+
+        self.counter += 1
+
+        self.boundaries_uint8[f'{self.counter}'] = (self.boundaries * 255).astype(np.uint8)
+
+        self.labels_uint8[f'{self.counter}'] = (self.filtered_labels > 0).astype(np.uint8) * 255
+
+
+
+
     def clear_data(self):
         # does currently clear everything
 
@@ -1202,7 +1217,12 @@ class ImageAnalyzerApp(ctk.CTk):
         self.max_position = ''
         self.fwhm= ''
 
+        for i in range(1, self.counter+1):
+            del self.boundaries_uint8[f'{i}']
+            del self.labels_uint8[f'{i}']
 
+
+        self.counter = 0
         self.filenames = []
 
         self.results = {
@@ -1241,8 +1261,7 @@ class ImageAnalyzerApp(ctk.CTk):
         # Construct specific filenames based on the base path
         save_path = f"{save_base_path}_particle_analysis_plot.txt"
         save_path2 = f"{save_base_path}_particle_analysis_results.txt"
-        save_path3 = f"{save_base_path}_boundaries.jpg"
-        save_path4 = f"{save_base_path}_labels.jpg"
+
 
         histogram_data = pd.DataFrame({
             'Bin_centers': self.bin_centers,
@@ -1272,13 +1291,17 @@ class ImageAnalyzerApp(ctk.CTk):
         # Combine all data into one DataFrame
         final_combined_data = pd.concat([self.df_particles, combined_data], axis=1)
 
-        boundaries_uint8 = (self.boundaries * 255).astype(np.uint8)
-        # Save the boundaries image
-        cv2.imwrite(save_path3, boundaries_uint8)
+        for i in range(1, self.counter+1):
+            c = i-1
+            filename = os.path.splitext(self.filenames[c])[0]
 
-        labels_uint8 = (self.filtered_labels > 0).astype(np.uint8) * 255
-        # Save the filtered_labels image
-        cv2.imwrite(save_path4, labels_uint8)
+            directory_path = os.path.dirname(save_base_path)
+
+            save_path3 = f"{directory_path}/{filename}_boundaries.jpg"
+            save_path4 = f"{directory_path}/{filename}_labels.jpg"
+
+            cv2.imwrite(save_path3, self.boundaries_uint8[f'{i}'])
+            cv2.imwrite(save_path4, self.labels_uint8[f'{i}'])
 
         # Save combined data to the specified file path
         final_combined_data.to_csv(save_path, index=False, sep='\t')
