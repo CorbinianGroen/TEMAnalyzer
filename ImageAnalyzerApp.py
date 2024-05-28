@@ -20,7 +20,7 @@ import json
 # add a range of what number should be
 # benchmark it -> compare lose boundaries to thight boundaries and deselect the errenous ones
 # compared to handpicked
-# wenn man viel rumclicked bei show dann geht deselction nicht merh richtig
+# wenn man viel rumclicked bei show dann geht deselction nicht merh richtig -> konnte nicht rasufinden warum
 
 
 
