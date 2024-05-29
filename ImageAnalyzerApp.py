@@ -9,6 +9,7 @@ import pandas as pd
 import cv2
 import numpy as np
 from scipy import ndimage
+from scipy.signal import savgol_filter, find_peaks
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from skimage.filters import threshold_sauvola
 from skimage import measure, segmentation, feature, morphology
@@ -721,6 +722,100 @@ class ImageAnalyzerApp(ctk.CTk):
         blurred = cv2.GaussianBlur(self.image_cv, (ksize, ksize), 0)
 
         self.img_back = cv2.subtract(blurred, self.image_cv)
+
+        self.progress_bar.set(1 / 8)  # Update progress
+        self.update_idletasks()
+
+        self.saturate()  # Apply saturation
+
+
+    def blur_1(self):
+
+        image_array = np.array(self.image_cv)
+
+        # Function to filter maxima based on the condition
+        def filter_maxima(image_array, maxima):
+            filtered_maxima = []
+            for i in range(1, len(maxima) - 1):
+                if not (image_array[maxima[i - 1]] > image_array[maxima[i]] and
+                        image_array[maxima[i + 1]] > image_array[maxima[i]]):
+                    filtered_maxima.append(maxima[i])
+            return np.array(filtered_maxima)
+
+        # Function to weight maxima based on their values
+        def weight_maxima(image_array, maxima):
+            values = image_array[maxima]
+            min_val, max_val = values.min(), values.max()
+            weights = 1 + 2 * (values - min_val) / (max_val - min_val)  # Scale between 1 and 3
+            return weights
+
+        # Function to apply weighted smoothing to filtered maxima
+        def weighted_smoothing_filtered_maxima(image_array, initial_window_length=51, final_window_length=11,
+                                               polyorder=3):
+            x = np.arange(image_array.shape[0])
+            smoothed_array = np.zeros_like(image_array, dtype=float)
+
+            for col in range(image_array.shape[1]):
+                # Initial smoothing of the data
+                initial_smoothed_col = savgol_filter(image_array[:, col], initial_window_length, polyorder)
+
+                # Identify local maxima on initially smoothed data
+                peaks, _ = find_peaks(initial_smoothed_col)
+
+                # Filter the maxima
+                filtered_peaks = filter_maxima(initial_smoothed_col, peaks)
+
+                # Apply weights to the filtered maxima
+                if len(filtered_peaks) > 0:
+                    weights = weight_maxima(initial_smoothed_col, filtered_peaks)
+
+                    # Create a weighted dataset
+                    weighted_data = np.repeat(initial_smoothed_col[filtered_peaks], weights.astype(int))
+                    weighted_indices = np.repeat(filtered_peaks, weights.astype(int))
+
+                    # Apply Savitzky-Golay filter to the weighted maxima
+                    adjusted_final_window_length = min(final_window_length, len(weighted_data))
+                    if adjusted_final_window_length % 2 == 0:  # Ensure the window length is odd
+                        adjusted_final_window_length -= 1
+
+                    final_smoothed_col = savgol_filter(weighted_data, adjusted_final_window_length, polyorder)
+                    final_smoothed_full_col = np.interp(x, weighted_indices, final_smoothed_col)
+                else:
+                    final_smoothed_full_col = savgol_filter(image_array[:, col], final_window_length, polyorder)
+
+                smoothed_array[:, col] = final_smoothed_full_col
+
+            return smoothed_array
+
+        # Apply weighted smoothing to the entire image array
+        smoothed_array = weighted_smoothing_filtered_maxima(image_array, initial_window_length=51,
+                                                            final_window_length=11,
+                                                            polyorder=3)
+
+        # Apply a 2D Savitzky-Golay filter to the smoothed array
+        def apply_2d_savgol_filter(image_array, window_length=5, polyorder=2):
+            # Apply the filter along the rows
+            smoothed_rows = savgol_filter(image_array, window_length, polyorder, axis=0)
+            # Apply the filter along the columns
+            smoothed_array = savgol_filter(smoothed_rows, window_length, polyorder, axis=1)
+            return smoothed_array
+
+        # Apply the 2D Savitzky-Golay filter
+        final_smoothed_image = apply_2d_savgol_filter(smoothed_array, window_length=5, polyorder=2)
+
+        # Invert the images
+        inverted_image_array = 255 - image_array
+        inverted_final_smoothed_image = 255 - final_smoothed_image
+
+        # Subtract the final smoothed background from the original inverted image
+        corrected_image = inverted_image_array - inverted_final_smoothed_image
+
+        # Ensure no negative values and clip to the range [0, 255]
+        corrected_image = np.clip(corrected_image, 0, 255).astype(np.uint8)
+
+        self.img_back = corrected_image
+        # Convert the corrected image back to its original form
+        corrected_image = 255 - corrected_image
 
         self.progress_bar.set(1 / 8)  # Update progress
         self.update_idletasks()
