@@ -2,7 +2,7 @@
     "switch_state": "True",
     "low_cutoff": "30",
     "high_cutoff": "400",
-    "blur": "151",
+    "blur": "153",
     "a": "8",
     "b": "5",
     "window_size": "200",
