@@ -512,8 +512,8 @@ class ImageAnalyzerApp(ctk.CTk):
             'average_diameter': ctk.CTkLabel(self.results_frame, text="Average Diameter:"),
             'surface_average': ctk.CTkLabel(self.results_frame, text="Surface Average:"),
             'expected_ecsa': ctk.CTkLabel(self.results_frame, text="Expected ECSA:"),
-            'max_position': ctk.CTkLabel(self.results_frame, text="Max Position:"),
-            'fwhm': ctk.CTkLabel(self.results_frame, text="FWHM:")
+            'geometric_mean': ctk.CTkLabel(self.results_frame, text="Geometric Mean:"),
+            'gm_std': ctk.CTkLabel(self.results_frame, text="GM_std:")
         }
 
         # Positioning results labels
@@ -526,8 +526,8 @@ class ImageAnalyzerApp(ctk.CTk):
         self.results_labels['average_diameter'].configure(text=f"Average Diameter: {results['Average_Diameter_nm']:.2f} \u00B1 {results['Average_Diameter_nm_std']:.2f} nm")
         self.results_labels['surface_average'].configure(text=f"Surface Average: {results['Surface_Average']:.2f} nm")
         self.results_labels['expected_ecsa'].configure(text=f"Expected ECSA: {results['Expected_ECSA_m²/g']:.2f} m²/g")
-        self.results_labels['max_position'].configure(text=f"Max Position: {results['Max_Position_nm']:.2f} nm")
-        self.results_labels['fwhm'].configure(text=f"FWHM: {results['FWHM_nm']:.2f} nm")
+        self.results_labels['geometric_mean'].configure(text=f"Geometric Mean: {results['Geometric_Mean_nm']:.2f} nm")
+        self.results_labels['gm_std'].configure(text=f"GM_std: {results['GM_std_nm']:.2f} nm")
 
     def toggle_deselect_mode(self):
         activate = self.deselect_mode_switch.get()  # This should return True or False based on the switch state
@@ -1251,11 +1251,11 @@ class ImageAnalyzerApp(ctk.CTk):
         # Generate PDF values for the extended x range
         self.pdf_fitted_extended = dist_extended.pdf(self.x_extended)
 
-        # Find the maximum position (mode) of the log-normal distribution
-        self.max_position = scale  # For a log-normal distribution
+        # Find the geometric mean of the log-normal distribution
+        self.geometric_mean = scale  # For a log-normal distribution
 
-        # Calculate FWHM
-        self.fwhm = np.exp(np.log(scale) + (sigma ** 2) / 2) * (np.exp(sigma ** 2) - 1) ** 0.5
+        # Calculate error
+        self.geometric_mean_error = self.geometric_mean * (np.exp(sigma) -1)
 
         self.ecsa = 6 / ((self.surface_average * (10 ** -9)) * (float(self.density_entry.get()) * (10 ** 6)))
 
@@ -1284,8 +1284,8 @@ class ImageAnalyzerApp(ctk.CTk):
             'Average_Diameter_nm_std': self.df_particles['Diameter_nm'].std(),
             'Surface_Average': self.surface_average,
             'Expected_ECSA_m²/g': self.ecsa,
-            'Max_Position_nm': self.max_position,
-            'FWHM_nm': self.fwhm,
+            'Geometric_mean_nm': self.geometric_mean,
+            'GM_std_nm': self.geometric_mean_error,
         }
 
         self.update_results_display(self.results)
@@ -1309,8 +1309,8 @@ class ImageAnalyzerApp(ctk.CTk):
 
         self.surface_average = ''
         self.ecsa = ''
-        self.max_position = ''
-        self.fwhm= ''
+        self.geometric_mean = ''
+        self.geometric_mean_error= ''
 
         for i in range(1, self.counter+1):
             del self.boundaries_uint8[f'{i}']
@@ -1327,8 +1327,8 @@ class ImageAnalyzerApp(ctk.CTk):
             'Average_Diameter_nm_std': 0,
             'Surface_Average': 0,
             'Expected_ECSA_m²/g': 0,
-            'Max_Position_nm': 0,
-            'FWHM_nm': 0,
+            'Geometric_mean_nm': 0,
+            'GM_std_nm': 0,
         }
 
         self.update_results_display(self.results)
@@ -1338,8 +1338,8 @@ class ImageAnalyzerApp(ctk.CTk):
         self.results_labels['average_diameter'].configure(text=f"Average Diameter: ")
         self.results_labels['surface_average'].configure(text=f"Surface Average: ")
         self.results_labels['expected_ecsa'].configure(text=f"Expected ECSA: ")
-        self.results_labels['max_position'].configure(text=f"Max Position: ")
-        self.results_labels['fwhm'].configure(text=f"FWHM: ")
+        self.results_labels['geometric_mean'].configure(text=f"Geometric Mean: ")
+        self.results_labels['gm_std'].configure(text=f"GM_std: ")
 
     def save_results(self):
         initial_filename = "analysis_results"  # Default filename without extension
@@ -1386,6 +1386,10 @@ class ImageAnalyzerApp(ctk.CTk):
         # Combine all data into one DataFrame
         final_combined_data = pd.concat([self.df_particles, combined_data], axis=1)
 
+        # Save combined data to the specified file path
+        final_combined_data.to_csv(save_path, index=False, sep='\t')
+        results_df.to_csv(save_path2, index=False, sep='\t')
+
         for i in range(1, self.counter+1):
             c = i-1
             filename = os.path.splitext(self.filenames[c])[0]
@@ -1398,9 +1402,7 @@ class ImageAnalyzerApp(ctk.CTk):
             cv2.imwrite(save_path3, self.boundaries_uint8[f'{i}'])
             cv2.imwrite(save_path4, self.labels_uint8[f'{i}'])
 
-        # Save combined data to the specified file path
-        final_combined_data.to_csv(save_path, index=False, sep='\t')
-        results_df.to_csv(save_path2, index=False, sep='\t')
+
 
         self.clear_data()
 
