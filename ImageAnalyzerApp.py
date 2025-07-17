@@ -526,7 +526,7 @@ class ImageAnalyzerApp(ctk.CTk):
         self.results_labels['average_diameter'].configure(text=f"Average Diameter: {results['Average_Diameter_nm']:.2f} \u00B1 {results['Average_Diameter_nm_std']:.2f} nm")
         self.results_labels['surface_average'].configure(text=f"Surface Average: {results['Surface_Average']:.2f} nm")
         self.results_labels['expected_ecsa'].configure(text=f"Expected ECSA: {results['Expected_ECSA_m²/g']:.2f} m²/g")
-        self.results_labels['geometric_mean'].configure(text=f"Geometric Mean: {results['Geometric_Mean_nm']:.2f} nm")
+        self.results_labels['geometric_mean'].configure(text=f"Geometric Mean: {results['Geometric_mean_nm']:.2f} nm")
         self.results_labels['gm_std'].configure(text=f"GM_std: {results['GM_std_nm']:.2f} nm")
 
     def toggle_deselect_mode(self):
